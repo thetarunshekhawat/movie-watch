@@ -15,7 +15,8 @@
  *
  *   3. DRIFT CORRECTION. Decoders drift apart even from a perfectly synced start.
  *      A 3s heartbeat drives a three-tier response: ignore / nudge playbackRate /
- *      hard seek. Only ONE peer corrects (see net.isReference) or they oscillate.
+ *      hard seek. Everyone corrects toward the HOST (net.isHost) and the host never
+ *      corrects, or the room chases several clocks at once and never settles.
  *
  *   4. STALL COORDINATION. If one side buffers, the other waits, then both resume.
  */
@@ -73,7 +74,12 @@ export function createSync(video, net, hooks = {}) {
   let nudgeTimer = null;
   let beatTimer = null;
   let weStalled = false;
-  let peerStalled = false;
+  /**
+   * Everyone currently buffering. A Set rather than a boolean because in a group
+   * any one person stalling should hold the room, and we must not resume until the
+   * LAST of them recovers.
+   */
+  const stalledPeers = new Set();
   let lastDrift = null;
 
   /**
@@ -116,7 +122,7 @@ export function createSync(video, net, hooks = {}) {
   }
 
   function broadcast(type) {
-    if (!net.peerId) return;
+    if (!net.peerCount) return;
     clock += 1;
     const msg = { type, mediaTime: sharedTime(), seq: clock, sentAt: Date.now() };
     remember(msg, net.selfId);
@@ -152,15 +158,17 @@ export function createSync(video, net, hooks = {}) {
     if (applyingRemote || weStalled) return;
     weStalled = true;
     net.sendStall({ stalled: true });
-    hooks.onStallChange?.(weStalled, peerStalled);
+    hooks.onStallChange?.(weStalled, stalledNames());
   });
 
   video.addEventListener('playing', () => {
     if (!weStalled) return;
     weStalled = false;
     net.sendStall({ stalled: false });
-    hooks.onStallChange?.(weStalled, peerStalled);
+    hooks.onStallChange?.(weStalled, stalledNames());
   });
+
+  const stalledNames = () => [...stalledPeers].map(id => net.name(id));
 
   // ─────────────────────────── peer → local ───────────────────────────
 
@@ -197,15 +205,20 @@ export function createSync(video, net, hooks = {}) {
     hooks.onRemoteCtrl?.(msg);
   };
 
-  net.onStall = ({ stalled }) => {
-    peerStalled = stalled;
+  net.onStall = ({ stalled }, from) => {
     if (stalled) {
+      stalledPeers.add(from);
       // Hold our position until they catch up.
       applyRemote(() => video.pause());
-    } else if (!weStalled && !video.ended) {
-      applyRemote(() => video.play().catch(() => {}));
+    } else {
+      stalledPeers.delete(from);
+      // Only resume once EVERYONE is ready — in a group, one person recovering
+      // must not drag the room back into playing while another is still buffering.
+      if (!weStalled && !stalledPeers.size && !video.ended) {
+        applyRemote(() => video.play().catch(() => {}));
+      }
     }
-    hooks.onStallChange?.(weStalled, peerStalled);
+    hooks.onStallChange?.(weStalled, stalledNames());
   };
 
   /**
@@ -214,8 +227,13 @@ export function createSync(video, net, hooks = {}) {
    * Only the non-reference peer acts on it. The reference peer just reports its
    * position and never adjusts, which is what stops the two from chasing each other.
    */
-  net.onBeat = msg => {
+  net.onBeat = (msg, from) => {
     if (!video.duration) return;
+
+    // Only the HOST's position counts. With three or more people, correcting
+    // toward whoever spoke last means chasing several different clocks at once and
+    // never settling — everyone follows one reference or nobody converges.
+    if (from !== net.hostId) return;
 
     // Where they are now, in our timeline, accounting for flight time.
     const theirNow = msg.mediaTime + offset + (msg.playing ? net.oneWay : 0);
@@ -223,9 +241,9 @@ export function createSync(video, net, hooks = {}) {
     lastDrift = drift;
     hooks.onDrift?.(drift);
 
-    if (net.isReference) return;        // we are the reference; never correct
+    if (net.isHost) return;             // we are the reference; never correct
     if (!msg.playing || video.paused) return;
-    if (weStalled || peerStalled) return;
+    if (weStalled || stalledPeers.size) return;
 
     const mag = Math.abs(drift);
 
@@ -259,7 +277,7 @@ export function createSync(video, net, hooks = {}) {
   };
 
   beatTimer = setInterval(() => {
-    if (!net.peerId || !video.duration) return;
+    if (!net.peerCount || !video.duration) return;
     net.sendBeat({
       mediaTime: sharedTime(),
       playing: !video.paused && !video.ended,
@@ -295,15 +313,32 @@ export function createSync(video, net, hooks = {}) {
       hooks.onOffsetChange?.(offset);
     },
 
-    /** Snap to the peer immediately, ignoring the deadband. Used by "Force resync". */
+    /** Snap everyone to us immediately, ignoring the deadband. "Force resync". */
     forceResync() {
-      if (!net.peerId) return;
+      if (!net.peerCount) return;
       clearNudge();
       broadcast(video.paused ? 'pause' : 'play');
     },
 
+    /**
+     * Host's "Start for everyone": pull the whole room to our position and play.
+     *
+     * Deliberately broadcasts even when we are already playing, so it doubles as a
+     * "get everyone back together" button. The 'play' command already carries our
+     * position and is latency-compensated on arrival, so no new message type is
+     * needed — everyone seeks to where we will be and starts there.
+     */
+    startTogether() {
+      clearNudge();
+      if (video.paused) {
+        video.play().catch(err => hooks.onPlayBlocked?.(err));   // 'play' event broadcasts
+      } else {
+        broadcast('play');
+      }
+    },
+
     get drift() { return lastDrift; },
-    get stalled() { return { us: weStalled, them: peerStalled }; },
+    get stalled() { return { us: weStalled, them: stalledNames() }; },
 
     destroy() {
       clearInterval(beatTimer);

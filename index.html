@@ -83,13 +83,9 @@
   <!-- Banners -->
   <div class="banners" id="banners"></div>
 
-  <!-- Webcam tiles -->
-  <div class="tile" id="peerTile" data-tile="peer" hidden>
-    <video id="peerVideo" autoplay playsinline></video>
-    <span class="tile-label" id="peerLabel">Them</span>
-    <span class="tile-muted" id="peerMutedIcon" hidden>🔇</span>
-    <div class="tile-resize" data-resize="peer"></div>
-  </div>
+  <!-- Webcam tiles. Peer tiles are created at runtime into this container, one per
+       person — the room holds up to six and we don't know who until they arrive. -->
+  <div id="peerTiles"></div>
 
   <div class="tile" id="selfTile" data-tile="self" hidden>
     <video id="selfVideo" autoplay playsinline muted></video>
@@ -145,6 +141,9 @@
 
       <button id="subsBtn" class="ctl" title="Subtitles — only yours (C)">💬</button>
       <button id="settingsBtn" class="ctl" title="Subtitles &amp; sync settings">⚙</button>
+      <button id="rosterBtn" class="ctl" title="Who's in the room">
+        👥<span class="badge count" id="rosterCount">1</span>
+      </button>
       <button id="chatBtn" class="ctl" title="Chat">
         💬<span class="badge" id="chatBadge" hidden>0</span>
       </button>
@@ -156,6 +155,21 @@
       <span class="dot" id="connDot" data-state="connecting"></span>
       <span id="connText">Connecting…</span>
       <span class="peer-state" id="peerState"></span>
+    </div>
+  </div>
+
+  <!-- ─────────── Room roster ─────────── -->
+  <div class="panel roster-panel" id="rosterPanel" hidden>
+    <div class="panel-head">
+      <h3>In this room</h3>
+      <button class="panel-close" data-close="rosterPanel">✕</button>
+    </div>
+    <div class="panel-body">
+      <ul class="roster" id="rosterList"></ul>
+      <!-- Only the host sees this. Pulls everyone to the host's position and plays,
+           so the movie genuinely starts at the same moment for the whole room. -->
+      <button id="startAllBtn" class="btn-primary" hidden>▶ Start for everyone</button>
+      <p class="hint" id="rosterHint"></p>
     </div>
   </div>
 

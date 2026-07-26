@@ -15,7 +15,6 @@ export function createChat({
   panel, log, form, input, badge, bubbles, reactions, picker, selfName,
 }) {
   let unread = 0;
-  let peerName = 'Them';
 
   /** main.js assigns these. */
   const handlers = { onSend: () => {}, onReact: () => {} };
@@ -104,12 +103,15 @@ export function createChat({
   return {
     set onSend(fn) { handlers.onSend = fn; },
     set onReact(fn) { handlers.onReact = fn; },
-    set peerName(n) { peerName = n || 'Them'; },
-
-    /** A message arrived from the peer. */
-    receive({ text, mediaTime }) {
-      appendMessage({ text, mine: false, who: peerName, mediaTime });
-      showBubble({ text, mine: false, who: peerName });
+    /**
+     * A message arrived. `who` is passed in rather than stored, because with a
+     * roomful of people every message needs its own sender name — main.js looks it
+     * up from the participant registry by peer id.
+     */
+    receive({ text, mediaTime, who }) {
+      const name = who || 'Someone';
+      appendMessage({ text, mine: false, who: name, mediaTime });
+      showBubble({ text, mine: false, who: name });
       bumpBadge();
     },
 

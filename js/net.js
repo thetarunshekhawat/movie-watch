@@ -62,11 +62,19 @@ const TURN = [];
  * networks, against any replacement list.
  */
 
+
 const PING_INTERVAL_MS = 10_000;
 const RTT_SAMPLES = 7;
 
 export { selfId };
 
+/**
+ * Join a room and return the transport.
+ *
+ * The room is a GROUP, not a pair. Up to about six people works comfortably;
+ * Trystero builds a full mesh, so every extra person adds a connection to every
+ * other person and the cost grows quadratically past that.
+ */
 export function connect(roomCode) {
   // Only pass turnConfig when we actually have relays, so the default-STUN-only
   // path stays exactly the documented default rather than "default plus empty list".
@@ -88,63 +96,144 @@ export function connect(roomCode) {
     onRequest: n => n,
   });
 
-  /** Rolling RTT samples, in ms. We use the median to shrug off outliers. */
-  const rttSamples = [];
+  /**
+   * When we joined, by our own wall clock.
+   *
+   * This decides who hosts (earliest joiner wins), so it is compared against other
+   * machines' clocks, which are NOT synchronised. That is fine here and nowhere
+   * else: people join a movie night minutes apart, and a few seconds of clock skew
+   * cannot reorder that. Never use it for playback timing — see `oneWay`.
+   */
+  const joinedAt = Date.now();
 
   /**
-   * The peer we are actually watching with.
+   * Everyone in the room except us: peerId → participant record.
    *
-   * A room can contain more than two peers — a laptop with a forgotten second tab
-   * open, or a session someone reloaded out of without the tab closing, lingers as
-   * a "ghost" until its tab really goes away. This app is strictly two-person, so
-   * we nominate the most recently joined peer as the real one and treat anything
-   * else as a ghost. Ghost heartbeats are ignored (drift correction needs exactly
-   * one source of truth) while their play/pause commands are still honoured.
+   * A peer appears here on `onPeerJoin` with a placeholder name, and is filled in
+   * when their `meta` arrives. Both steps matter — the roster should show that
+   * *somebody* is here even before we know who.
    */
-  let peerId = null;
-  const allPeers = new Set();
+  const peers = new Map();
+
+  /** Our own record, kept in the same shape so roster code has no special case. */
+  let self = { id: selfId, name: 'You', joinedAt, fingerprint: null, fileName: null };
+
+  /** Rolling RTT samples per peer, in ms. Median, to shrug off outliers. */
+  const rtt = new Map();
+
   let pingTimer = null;
+
+  const median = arr => {
+    if (!arr?.length) return null;
+    const s = [...arr].sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  };
+
+  /**
+   * Who is the host?
+   *
+   * The earliest joiner, tie-broken by peer id so every machine computes the same
+   * answer with no negotiation. Peers whose `meta` has not arrived yet are excluded
+   * — we do not know when they joined, and guessing makes the host flap.
+   *
+   * The host is the reference for drift correction and the only one who can start
+   * the movie for everybody. If they leave, the next-earliest person takes over
+   * automatically, because this is recomputed rather than stored.
+   */
+  function computeHostId() {
+    let best = self;
+    for (const p of peers.values()) {
+      if (p.joinedAt == null) continue;
+      if (p.joinedAt < best.joinedAt ||
+         (p.joinedAt === best.joinedAt && p.id < best.id)) best = p;
+    }
+    return best.id;
+  }
+
+  /** Fired whenever the roster changes shape or content, so the UI can redraw. */
+  const notifyRoster = () => net.onRoster(net.participants);
 
   const net = {
     room,
     selfId,
     roomCode,
+    joinedAt,
 
-    /** The connected peer's id, or null. */
-    get peerId() { return peerId; },
-
-    /** Every peer currently in the room, ghosts included. */
-    get peerCount() { return allPeers.size; },
+    /** Set our own identity, so we appear in our own roster correctly. */
+    setSelf(patch) {
+      self = { ...self, ...patch };
+      notifyRoster();
+    },
 
     /**
-     * Estimated one-way latency in SECONDS.
+     * Everyone in the room including us, earliest joiner first.
      *
-     * Starts at a conservative 50ms so the very first sync command is not wildly
-     * wrong before any probe has completed.
+     * Sorted by join time so the list does not reshuffle as people come and go,
+     * and so the host is always at the top.
+     */
+    get participants() {
+      const hostId = computeHostId();
+      const all = [self, ...peers.values()];
+      return all
+        .sort((a, b) => (a.joinedAt ?? Infinity) - (b.joinedAt ?? Infinity)
+                     || (a.id < b.id ? -1 : 1))
+        .map(p => ({
+          id: p.id,
+          name: p.name,
+          fingerprint: p.fingerprint,
+          fileName: p.fileName,
+          isSelf: p.id === selfId,
+          isHost: p.id === hostId,
+          known: p.joinedAt != null,
+          rttMs: p.id === selfId ? 0 : median(rtt.get(p.id)),
+        }));
+    },
+
+    get hostId() { return computeHostId(); },
+    get isHost() { return computeHostId() === selfId; },
+
+    /** Peers only — excludes us. */
+    get peerCount() { return peers.size; },
+    get peerIds() { return [...peers.keys()]; },
+
+    /** Kept for the diagnostics readout: the peer we most recently heard join. */
+    get peerId() { return peers.size ? [...peers.keys()].pop() : null; },
+
+    name(peerId) {
+      if (peerId === selfId) return self.name;
+      return peers.get(peerId)?.name || 'Someone';
+    },
+
+    /**
+     * Estimated one-way latency to the HOST, in seconds.
+     *
+     * Sync compensation is always measured against the host, because that is whose
+     * position everyone else is chasing. Starts at a conservative 50ms so the first
+     * command is not wildly wrong before any probe has completed.
      */
     get oneWay() {
-      if (!rttSamples.length) return 0.05;
-      const sorted = [...rttSamples].sort((a, b) => a - b);
-      return sorted[Math.floor(sorted.length / 2)] / 2 / 1000;
-    },
-
-    get rttMs() {
-      if (!rttSamples.length) return null;
-      const sorted = [...rttSamples].sort((a, b) => a - b);
-      return Math.round(sorted[Math.floor(sorted.length / 2)]);
+      const h = computeHostId();
+      if (h === selfId) return 0;
+      const m = median(rtt.get(h));
+      return m == null ? 0.05 : m / 2 / 1000;
     },
 
     /**
-     * Who is the drift-correction reference?
+     * Latency for the diagnostics panel, in ms.
      *
-     * Both peers must agree without negotiating, or they chase each other and
-     * oscillate forever. Comparing peer id strings is deterministic and gives
-     * opposite answers on the two machines, which is exactly what we need.
-     * The peer with the SMALLER id is the reference; the other one corrects.
+     * Followers report their round trip to the host, since that is the number that
+     * actually governs their sync compensation. The host has no host to measure
+     * against, so it reports the worst round trip in the room — the person most at
+     * risk of drifting.
      */
-    get isReference() {
-      if (!peerId) return true;
-      return selfId < peerId;
+    get rttMs() {
+      const h = computeHostId();
+      if (h !== selfId) {
+        const m = median(rtt.get(h));
+        return m == null ? null : Math.round(m);
+      }
+      const all = [...rtt.keys()].map(id => median(rtt.get(id))).filter(v => v != null);
+      return all.length ? Math.round(Math.max(...all)) : null;
     },
 
     // ── senders ──
@@ -153,9 +242,9 @@ export function connect(roomCode) {
     sendStall: d => stall.send(d),
     sendChat:  d => chat.send(d),
     sendReact: d => react.send(d),
-    sendMeta:  d => meta.send(d),
+    sendMeta:  (d, target) => meta.send(d, target ? { target } : undefined),
 
-    // ── receivers, assigned by main.js ──
+    // ── receivers, assigned by main.js. All get (data, senderPeerId). ──
     onCtrl:     () => {},
     onBeat:     () => {},
     onStall:    () => {},
@@ -165,6 +254,7 @@ export function connect(roomCode) {
     onPeerJoin: () => {},
     onPeerLeave:() => {},
     onStream:   () => {},
+    onRoster:   () => {},
 
     /**
      * Send our camera/mic to peers.
@@ -180,16 +270,16 @@ export function connect(roomCode) {
       room.addStream(stream, target ? { target } : undefined),
 
     /**
-     * Live connection health, straight from the RTCPeerConnection.
+     * Live connection health for one peer, straight from the RTCPeerConnection.
      *
-     * "Connected" on its own has already lied to us once: the data-channel handshake
-     * succeeds over host/reflexive candidates, then adding a camera stream forces a
-     * renegotiation that can fail on a network needing a TURN relay — leaving a dead
-     * connection behind a green dot. `candidate` tells you which path is really in
-     * use: 'host' = same machine, 'srflx'/'prflx' = direct across NAT, 'relay' = TURN.
+     * "Connected" on its own has already lied to us once, badly: every browser in
+     * the room reported a healthy peer while actually talking to a stale window on
+     * its own machine. `candidate` is the tell — 'host' on both ends means a
+     * local-only network path, which cannot happen across the internet.
+     * 'srflx'/'prflx' is a genuine direct connection, 'relay' means TURN.
      */
-    async diagnose() {
-      const pc = room.getPeers()[peerId];
+    async diagnose(peerId = computeHostId() === selfId ? net.peerId : computeHostId()) {
+      const pc = peerId ? room.getPeers()[peerId] : null;
       if (!pc) return { state: 'none', candidate: '—' };
       const out = { state: pc.connectionState || pc.iceConnectionState, candidate: '—' };
       try {
@@ -214,57 +304,58 @@ export function connect(roomCode) {
   };
 
   // Trystero delivers `(data, {peerId})`. Pass the sender id through rather than
-  // assuming it — an earlier version credited every incoming message to `peerId`,
-  // which is wrong the moment a ghost tab is also in the room, and quietly corrupts
-  // the sequence-number tiebreak in sync.js.
+  // assuming it — with more than two people in the room there is no such thing as
+  // "the peer", and guessing corrupts the sequence tiebreak in sync.js.
   ctrl.onMessage  = (d, { peerId: from }) => net.onCtrl(d, from);
+  beat.onMessage  = (d, { peerId: from }) => net.onBeat(d, from);
   stall.onMessage = (d, { peerId: from }) => net.onStall(d, from);
   chat.onMessage  = (d, { peerId: from }) => net.onChat(d, from);
   react.onMessage = (d, { peerId: from }) => net.onReact(d, from);
-  meta.onMessage  = (d, { peerId: from }) => net.onMeta(d, from);
 
-  // Drift correction needs exactly one reference position, so a ghost's heartbeat
-  // must never reach it. Commands (ctrl) are not filtered — a play from any peer is
-  // a real user pressing a real button.
-  beat.onMessage = (d, { peerId: from }) => {
-    if (from !== peerId) return;
-    net.onBeat(d, from);
+  // Meta doubles as the roster feed: it is how we learn names and join times, and
+  // therefore how the host is decided.
+  meta.onMessage = (d, { peerId: from }) => {
+    const existing = peers.get(from) || { id: from };
+    peers.set(from, { ...existing, ...d, id: from });
+    notifyRoster();
+    net.onMeta(d, from);
   };
 
   room.onPeerJoin = id => {
-    allPeers.add(id);
-    peerId = id;
-    rttSamples.length = 0;   // latency to a new peer is unrelated to the old one
+    // Placeholder until their meta lands, so the roster can show that someone is
+    // connecting rather than staying silent about them.
+    if (!peers.has(id)) peers.set(id, { id, name: 'Joining…', joinedAt: null });
+    rtt.delete(id);
+    notifyRoster();
     net.onPeerJoin(id);
-    probe();
+    probe(id);
   };
 
   room.onPeerLeave = id => {
-    allPeers.delete(id);
-    if (id === peerId) {
-      // Fall back to another peer if one is still around, rather than going dark.
-      peerId = [...allPeers].pop() ?? null;
-      rttSamples.length = 0;
-    }
+    peers.delete(id);
+    rtt.delete(id);
+    notifyRoster();
     net.onPeerLeave(id);
   };
 
   room.onPeerStream = (stream, id) => net.onStream(stream, id);
 
   /** One RTT measurement. Failures are ignored — the peer may just have left. */
-  async function probe() {
-    if (!peerId) return;
+  async function probe(id) {
+    if (!peers.has(id)) return;
     const t0 = performance.now();
     try {
-      await ping.request(1, { target: peerId, timeoutMs: 4000 });
-      rttSamples.push(performance.now() - t0);
-      if (rttSamples.length > RTT_SAMPLES) rttSamples.shift();
+      await ping.request(1, { target: id, timeoutMs: 4000 });
+      const samples = rtt.get(id) || [];
+      samples.push(performance.now() - t0);
+      if (samples.length > RTT_SAMPLES) samples.shift();
+      rtt.set(id, samples);
     } catch {
       /* timed out or peer gone; the next probe will retry */
     }
   }
 
-  pingTimer = setInterval(probe, PING_INTERVAL_MS);
+  pingTimer = setInterval(() => net.peerIds.forEach(probe), PING_INTERVAL_MS);
 
   return net;
 }

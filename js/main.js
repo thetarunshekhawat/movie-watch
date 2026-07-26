@@ -153,10 +153,7 @@ async function start(roomCode) {
   $('lobby').hidden = true;
   stage.hidden = false;
 
-  const myName = lobby.name.value.trim() || 'Them';
-
-  // Declared before createSync because the sync hooks close over it.
-  let peerName = 'Them';
+  const myName = lobby.name.value.trim() || 'Guest';
 
   attach(video, movieFile);
   if (subFile) await loadSubtitles(video, subFile);
@@ -167,9 +164,11 @@ async function start(roomCode) {
     onDrift: d => { $('diagDrift').textContent = `${d >= 0 ? '+' : ''}${d.toFixed(2)}s`; },
     onCorrection: (kind, d) => console.debug(`[sync] ${kind} correction, drift ${d.toFixed(2)}s`),
     onOffsetChange: v => { $('offsetVal').textContent = `${v >= 0 ? '+' : ''}${v.toFixed(1)}s`; },
-    onStallChange: (us, them) => {
+    onStallChange: (us, waitingOn) => {
       centerStatus($('centerStatus'),
-        us ? 'Buffering…' : them ? `Waiting for ${peerName}…` : null);
+        us ? 'Buffering…'
+          : waitingOn.length ? `Waiting for ${listNames(waitingOn)}…`
+          : null);
     },
     onPlayBlocked: () => banner(banners, {
       id: 'autoplay', kind: 'warn', sticky: true,
@@ -202,84 +201,161 @@ async function start(roomCode) {
   // headless Chrome rejects getUserMedia instantly.
   let call = null;
   let duck = null;
-  let pendingStream = null;
+  const pendingStreams = [];
 
-  net.onChat = ({ text, mediaTime }) => chat.receive({ text, mediaTime });
-  net.onReact = ({ emoji }) => chat.receiveReaction(emoji);
+  const listNames = names =>
+    names.length <= 1 ? (names[0] ?? '')
+      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 
-  // With cameras off there is no tile to prove someone is there, so the status
-  // line has to carry presence on its own.
-  const showPresence = () => {
-    $('connDot').dataset.state = 'connected';
-    $('connText').textContent = net.peerId
-      ? `Connected — watching with ${peerName}`
-      : 'Waiting for them to join…';
+  /**
+   * Draw the participant list.
+   *
+   * This is the answer to "who is actually in here?" — the question that cost an
+   * entire evening when every browser was confidently connected to a stale window
+   * on its own machine. Showing names, host, and your own entry makes that failure
+   * self-evident instead of invisible.
+   */
+  function renderRoster() {
+    const people = net.participants;
+    const list = $('rosterList');
+    list.replaceChildren();
+
+    for (const p of people) {
+      const li = document.createElement('li');
+
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.dataset.state = p.isSelf || p.known ? 'connected' : 'connecting';
+
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = p.name;                 // textContent — remote input
+
+      li.append(dot, who);
+
+      if (p.isHost) li.append(tag('host', 'HOST'));
+      if (p.isSelf) li.append(tag('you', 'YOU'));
+      // Flag anyone whose file differs from ours, so a sync problem has an
+      // obvious explanation instead of looking like a bug.
+      if (!p.isSelf && p.fingerprint && movieFp && p.fingerprint !== movieFp) {
+        li.append(tag('mismatch', 'OTHER FILE'));
+      }
+      if (!p.isSelf && p.rttMs != null) {
+        const ping = document.createElement('span');
+        ping.className = 'ping';
+        ping.textContent = `${Math.round(p.rttMs)} ms`;
+        li.append(ping);
+      }
+
+      list.appendChild(li);
+    }
+
+    $('rosterCount').textContent = String(people.length);
+    $('startAllBtn').hidden = !net.isHost;
+    $('rosterHint').textContent = net.isHost
+      ? people.length > 1
+        ? 'You are the host. Everyone jumps to your position when you press this.'
+        : 'You are the host. Waiting for others to join.'
+      : `${net.name(net.hostId)} is the host. Anyone can pause or seek.`;
+
+    updateStatusLine(people);
+  }
+
+  const tag = (kind, text) => {
+    const el = document.createElement('span');
+    el.className = `tag ${kind}`;
+    el.textContent = text;
+    return el;
   };
 
+  /** The one-line summary along the bottom of the control bar. */
+  function updateStatusLine(people = net.participants) {
+    const others = people.filter(p => !p.isSelf);
+    $('connDot').dataset.state = others.length ? 'connected' : 'connecting';
+    $('connText').textContent = others.length
+      ? `Connected — watching with ${listNames(others.map(p => p.name))}`
+      : 'Waiting for someone to join…';
+  }
+
+  net.setSelf({ name: myName, fingerprint: movieFp, fileName: movieFile.name });
+
+  net.onChat = ({ text, mediaTime }, from) =>
+    chat.receive({ text, mediaTime, who: net.name(from) });
+  net.onReact = ({ emoji }) => chat.receiveReaction(emoji);
+
+  /** Our identity card, sent to the whole room or to one newcomer. */
+  const myMeta = () => ({
+    name: myName,
+    joinedAt: net.joinedAt,     // decides who hosts — earliest joiner wins
+    fingerprint: movieFp,
+    fileName: movieFile.name,
+    duration: video.duration,
+  });
+
   net.onPeerJoin = id => {
-    $('connDot').dataset.state = 'connected';
-    showPresence();
-    $('diagRole').textContent = net.isReference ? 'reference' : 'follower';
-    net.sendMeta({
-      name: myName,
-      fingerprint: movieFp,
-      fileName: movieFile.name,
-      duration: video.duration,
-    });
+    // Introduce ourselves directly to the newcomer. A broadcast would reach them
+    // too, but targeting means a late arrival always learns about everyone already
+    // here, which is what makes the roster correct rather than order-dependent.
+    net.sendMeta(myMeta(), id);
 
     // Send them our camera. This is REQUIRED, not a retry: room.addStream() only
     // reaches peers already in the room, and when we called it after the camera
     // prompt the room was still empty (peer discovery is slower than clicking
-    // "Allow"). Without this line neither side ever receives the other's video —
-    // verified, both peers saw only themselves.
+    // "Allow"). Without this line nobody ever receives anybody's video — verified,
+    // every peer saw only themselves.
     if (call?.stream) net.addStream(call.stream, id);
 
     // Bring them to our current position immediately.
     sync.forceResync();
   };
 
-  net.onPeerLeave = () => {
-    $('connDot').dataset.state = 'lost';
-    $('connText').textContent = 'They disconnected — waiting for them to come back…';
-    call?.detachPeer();
-    chat.system(`${peerName} left.`);
+  net.onPeerLeave = id => {
+    const who = net.name(id);
+    call?.detachPeer(id);
+    chat.system(`${who} left.`);
+    renderRoster();
   };
 
-  // The stream can arrive before the local call object exists; hold it until then.
-  net.onStream = stream => {
-    if (call) call.attachPeer(stream);
-    else pendingStream = stream;
+  // Streams can arrive before the local call object exists; hold them until then.
+  net.onStream = (stream, from) => {
+    if (call) call.attachPeer(from, stream);
+    else pendingStreams.push([from, stream]);
   };
 
   // Wired here, before the await, for the reason documented at the top of this
-  // block: the peer's meta arrives while the camera prompt is still open, and a
-  // handler assigned after the await misses it entirely (no peer name, no
+  // block: peer meta arrives while the camera prompt is still open, and a handler
+  // assigned after the await misses it entirely (no names, no roster, no
   // file-mismatch warning).
-  net.onMeta = ({ name, fingerprint: theirFp, fileName }) => {
-    peerName = name || 'Them';
-    chat.peerName = peerName;
-    $('peerLabel').textContent = peerName;
-    showPresence();
-    chat.system(`${peerName} joined.`);
+  const greeted = new Set();
+  net.onMeta = ({ name, fingerprint: theirFp, fileName }, from) => {
+    call?.setPeerName(from, name || 'Someone');
+
+    // Meta can arrive more than once per person (we re-send on every join so the
+    // roster stays complete), so only announce them the first time.
+    if (!greeted.has(from)) {
+      greeted.add(from);
+      chat.system(`${name || 'Someone'} joined.`);
+    }
 
     if (theirFp && movieFp && theirFp !== movieFp) {
       banner(banners, {
-        id: 'mismatch', kind: 'warn', sticky: true,
-        title: 'You two have different files',
+        id: `mismatch:${from}`, kind: 'warn', sticky: true,
+        title: `${name || 'Someone'} has a different file`,
         body: `Yours: ${movieFile.name} · Theirs: ${fileName}. Timestamps may not line up — `
-            + 'use the sync offset in Settings (⚙) to correct it.',
+            + 'they can use the sync offset in Settings (⚙) to correct it.',
       });
     }
   };
+
+  net.onRoster = () => renderRoster();
 
   // ── call (async — everything above must already be wired) ──
   const wantCamera = lobby.camera.checked;
 
   ({ call, duck } = await startCall({
     selfVideo: $('selfVideo'),
-    peerVideo: $('peerVideo'),
     selfTile: $('selfTile'),
-    peerTile: $('peerTile'),
+    tiles: $('peerTiles'),
     enabled: wantCamera,
   }));
 
@@ -299,10 +375,13 @@ async function start(roomCode) {
     net.addStream(call.stream);
   }
 
-  if (pendingStream) {
-    call.attachPeer(pendingStream);
-    pendingStream = null;
+  while (pendingStreams.length) {
+    const [from, stream] = pendingStreams.shift();
+    call.attachPeer(from, stream);
+    call.setPeerName(from, net.name(from));
   }
+
+  renderRoster();
 
   // Auto-duck drives the movie volume via a multiplier, so the user's own volume
   // slider stays the source of truth.
@@ -387,6 +466,20 @@ async function start(roomCode) {
     $('settingsPanel').hidden = !$('settingsPanel').hidden;
   });
 
+  $('rosterBtn').addEventListener('click', () => {
+    $('rosterPanel').hidden = !$('rosterPanel').hidden;
+    if (!$('rosterPanel').hidden) renderRoster();
+  });
+
+  $('startAllBtn').addEventListener('click', () => {
+    sync.startTogether();
+    banner(banners, {
+      id: 'startall', kind: 'info',
+      body: 'Started for everyone in the room.',
+    });
+    $('rosterPanel').hidden = true;
+  });
+
   $('chatBtn').addEventListener('click', () => chat.togglePanel());
   $('reactBtn').addEventListener('click', () => chat.togglePicker());
   $('fsBtn').addEventListener('click', () => toggleFullscreen(stage));
@@ -425,14 +518,17 @@ async function start(roomCode) {
   // ── diagnostics ──
   setInterval(async () => {
     $('diagRtt').textContent = net.rttMs != null ? `${net.rttMs} ms` : '—';
-    $('diagRole').textContent = net.peerId ? (net.isReference ? 'reference' : 'follower') : '—';
+    $('diagRole').textContent = net.isHost ? 'host (reference)' : 'follower';
     $('diagPeers').textContent = String(net.peerCount);
-    // Showing the name here is not cosmetic: seeing your OWN name in this row is
+    // Showing the names here is not cosmetic: seeing your OWN name in this row is
     // the fastest way to spot that you are connected to a stale local window.
-    $('diagPeerName').textContent = net.peerId ? `${peerName} (you are ${myName})` : '—';
-    if (net.peerId) {
+    const others = net.participants.filter(p => !p.isSelf);
+    $('diagPeerName').textContent = others.length
+      ? `${others.map(p => p.name).join(', ')} (you are ${myName})`
+      : '—';
+    if (net.peerCount) {
       const s = sync.stalled;
-      $('peerState').textContent = s.them ? `${peerName} is buffering`
+      $('peerState').textContent = s.them.length ? `${listNames(s.them)} buffering`
         : video.paused ? 'Paused' : 'Playing together';
     }
 
@@ -449,23 +545,23 @@ async function start(roomCode) {
     // connected to a leftover Movie Watch window on their OWN laptop, each
     // showing a confident green "Connected", while the two laptops had never
     // found each other at all.
-    if (net.peerId && d.candidate === 'host/host') {
+    if (net.peerCount && d.candidate === 'host/host') {
       banner(banners, {
         id: 'localpeer', kind: 'warn', sticky: true,
-        title: `This connection is on your own machine`,
-        body: `You are connected to "${peerName}" over a local-only network path. `
-            + 'If they are on a different computer, this is a stale Movie Watch window '
-            + 'on THIS one — close your other tabs and windows, then reload. '
-            + '(Fine to ignore if you are both on the same wifi.)',
+        title: 'This connection is on your own machine',
+        body: 'You are connected over a local-only network path. If the others are on '
+            + 'different computers, this is a stale Movie Watch window on THIS one — '
+            + 'check the roster (👥); if you see your own name, close your other tabs '
+            + 'and windows and reload. (Fine to ignore if you are all on the same wifi.)',
       });
     }
-    if (net.peerId && (d.state === 'failed' || d.state === 'disconnected')) {
+    if (net.peerCount && (d.state === 'failed' || d.state === 'disconnected')) {
       $('connDot').dataset.state = 'lost';
       $('connText').textContent = d.state === 'failed'
-        ? 'Connection failed — no direct route between your two networks'
+        ? 'Connection failed — no direct route between your networks'
         : 'Connection dropped — trying to recover…';
-    } else if (net.peerId && d.state === 'connected') {
-      showPresence();   // recovered, or never broke
+    } else if (net.peerCount && d.state === 'connected') {
+      updateStatusLine();   // recovered, or never broke
     }
   }, 1000);
 

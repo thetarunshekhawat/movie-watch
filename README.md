@@ -1,12 +1,14 @@
 # 🍿 Movie Watch
 
-Watch a movie with someone else, from anywhere, in perfect sync.
+Watch a movie with your friends, from anywhere, in perfect sync. Up to about six people per room.
 
-You both play **your own copy** of the film from your own hard drive. Nothing is uploaded or
+Everyone plays **their own copy** of the film from their own hard drive. Nothing is uploaded or
 streamed — only tiny "play"/"pause"/"seek" messages travel between you. So the video is always
 full quality, and it works even on slow internet.
 
-- Pause on one side, it pauses on the other
+- Anyone pauses, it pauses for everyone
+- A roster (👥) showing exactly who's in the room, and who's hosting
+- The host's **Start for everyone** pulls the whole room to the same moment
 - Chat and emoji reactions over the movie, without pausing it
 - **Volume and subtitles are yours alone** — set them however you like
 - Optional webcams, with the movie ducking when the other person talks
@@ -15,7 +17,6 @@ full quality, and it works even on slow internet.
 > connection, and without a TURN relay that can break an otherwise healthy link — taking sync and
 > chat down with it. Tick **Turn on camera and mic** in the lobby only if you're both on the same
 > wifi. Otherwise leave it off and put a normal video call on your phone alongside.
-- Text chat with bubbles that float over the film, and emoji reactions
 
 There is **no server**. Just a web page.
 
@@ -73,11 +74,14 @@ Send that link to the other person once. It never expires, so they can bookmark 
 
 ## Movie night
 
-1. You both open the link
+1. Everyone opens the link
 2. Type the **same room code** (or just use the `?room=...` link the app generates)
 3. Pick your movie file — and a subtitle file if you want one
 4. Hit **Join room**
-5. Either of you presses play
+5. Open the roster (👥) and check everyone you expect is listed
+6. The **host** — whoever joined first — presses **Start for everyone**
+
+After that anyone can pause, seek or skip, and it applies to the whole room.
 
 **If you turn cameras on, wear headphones.** This is not optional. Without them, the movie's audio
 comes out of your speakers, goes into your microphone, and echoes back to the other person. Browser
@@ -102,6 +106,11 @@ Anything with a 🔗 on it affects both of you. Anything labelled **"just you"**
 ---
 
 ## When something's wrong
+
+**Someone's missing from the roster (👥).**
+The roster is the truth about who is actually connected. If a name isn't there, that person hasn't
+joined — check the room code matches exactly. If you see **your own name twice**, you have a stale
+Movie Watch window open somewhere; quit the browser entirely and rejoin.
 
 **"It says connecting forever."**
 You're probably not in the same room code — check for typos, or just use the same link. If the code

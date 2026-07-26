@@ -7,17 +7,18 @@
 
 ## What this is
 
-A web app that lets two people in different locations watch the same movie together. Each person
+A web app that lets a small group in different locations watch the same movie together. Each person
 plays their **own local copy** of the video file — nothing is streamed or uploaded. Only small
-control messages (play, pause, seek) and the two webcam streams cross the network, peer-to-peer.
+control messages (play, pause, seek) and the webcam streams cross the network, peer-to-peer.
 
-Built for one specific pair of users, not the public. Optimised for "click a link and it works"
-rather than for scale.
+Built for one specific group of friends, not the public. Optimised for "click a link and it
+works" rather than for scale — a room holds about six people before the full peer mesh gets
+expensive.
 
 **The four things it has to get right:**
 
-1. Pause/play/seek on one side happens on the other side too
-2. Both people see each other's faces over the movie
+1. Pause/play/seek by anyone happens for everyone
+2. You can always see who is actually in the room
 3. Volume and subtitles are strictly per-person
 4. It survives a laptop sleeping, a wifi blip, or slightly mismatched video files
 
@@ -27,8 +28,10 @@ rather than for scale.
 
 > ⚠️ **The section that rots fastest. Update it whenever anything lands.**
 
-**Phase:** Feature-complete, verified in two-browser testing, and deployed to GitHub Pages.
-Not yet tested between two real machines across the internet.
+**Phase:** Group rooms (roster + host + synchronised start) built and verified with three
+simultaneous peers. Deployed to GitHub Pages. **Still never verified between two real machines
+across the internet** — every attempt so far ended with each browser connected to a stale window
+on its own machine.
 
 | Component | File | Status |
 |---|---|---|
@@ -44,16 +47,18 @@ Not yet tested between two real machines across the internet.
 | README | `README.md` | ✅ Done |
 | Deployed to GitHub Pages | — | ✅ Live at `https://thetarunshekhawat.github.io/movie-watch/` |
 
-**Verified working** (two Chromium tabs, same room, real Nostr relay handshake):
-peer connection, reference/follower role split, play/pause sync (landed at identical
-timestamps), seek sync in both directions, drift detection and proportional
-correction, chat with floating bubbles and unread badge, emoji reactions, SRT→VTT
-subtitle conversion, per-person volume and subtitle independence, sync-offset
-persistence, and the file-mismatch warning.
+**Verified working** (three Chromium tabs, same room, real Nostr relay handshake):
+peer discovery, roster agreement and host election across all three, host handover
+when the host leaves, "Start for everyone" landing within 0.25s, play/pause/seek
+from any participant propagating to everyone, drift detection and proportional
+correction, chat attributed per sender with floating bubbles and unread badge,
+emoji reactions, SRT→VTT subtitle conversion, per-person volume and subtitle
+independence, sync-offset persistence, the file-mismatch flag, and dynamic peer
+tiles created/labelled/removed cleanly.
 
-**Not yet verified:** anything involving a real camera or microphone (auto-duck,
-tile rendering, echo behaviour, push-to-talk), fullscreen overlay behaviour, and
-connection between two machines on different networks (the TURN fallback path).
+**Not yet verified:** a real camera or microphone (auto-duck, echo behaviour,
+push-to-talk), fullscreen overlay behaviour, and — the big one — any connection
+between two machines on different networks.
 
 ---
 
@@ -80,13 +85,14 @@ is just the page URL with that param. It never expires and never changes.
 ## Architecture
 
 ```
-   PERSON A's BROWSER                                PERSON B's BROWSER
+   HOST's BROWSER                                    EVERYONE ELSE (up to ~5 more)
    ┌──────────────────────────┐                      ┌──────────────────────────┐
    │ <video> ← local file     │                      │ <video> ← local file     │
+   │ drift reference          │                      │ corrects toward the host │
    │ volume/subs: local only  │                      │ volume/subs: local only  │
    └──────────────────────────┘                      └──────────────────────────┘
               │                                                 │
-              └────────── WebRTC, peer-to-peer ─────────────────┘
+              └──── WebRTC full mesh, peer-to-peer ─────────────┘
                     • DataChannel: play/pause/seek/heartbeat/chat
                     • Media:       webcam + mic
                           ▲
@@ -131,9 +137,23 @@ webcam is a nice-to-have that WhatsApp can cover. So the lobby ships with the ca
 an unticked box means `getUserMedia` is never called at all: no prompt, no media track, no
 renegotiation. Tick it only when both people are on the same network, or once TURN is configured.
 
-**Only one peer corrects drift.** If both peers correct toward each other they oscillate forever.
-The rule is deterministic and needs no negotiation: the peer with the lexicographically smaller
-`peerId` is the reference, the other one always corrects.
+**Everyone corrects toward the host; the host never corrects.** If peers correct toward each other
+they oscillate forever, and with three or more people chasing several clocks at once nothing ever
+settles. One reference is the only stable arrangement.
+
+**The host is the earliest joiner, recomputed rather than stored.** Each person broadcasts a
+`joinedAt` wall-clock stamp in `meta`; the host is the smallest, tie-broken by peer id so every
+machine derives the same answer with no negotiation and no election protocol. Recomputing means
+the role simply moves to the next-earliest person when the host leaves — verified. Peers whose
+`meta` has not arrived are excluded from the election, otherwise the host flaps as people connect.
+This compares clocks across machines, which is normally forbidden here (see `sentAt`), and it is
+fine only because people join minutes apart and seconds of skew cannot reorder that. **Never use
+`joinedAt` for playback timing.**
+
+**Anyone can pause and seek; only the host can start the room together.** Deliberate — this is two
+friends watching a film, not a lecture. "Start for everyone" reuses the existing `play` command
+rather than adding a message type, because `play` already carries the sender's position and is
+latency-compensated on arrival.
 
 **Sync messages go over the WebRTC DataChannel, not a server.** Lower latency (~20-80ms) and it
 keeps working if the relays vanish.
@@ -162,7 +182,7 @@ All messages are Trystero actions created with `room.makeAction(name)`.
 | `stall` | broadcast | `{stalled: boolean}` | One side is buffering; other side waits |
 | `chat` | broadcast | `{text, mediaTime, sentAt}` | Text message; `mediaTime` timestamps it against the movie |
 | `react` | broadcast | `{emoji}` | Floating emoji reaction |
-| `meta` | broadcast on join | `{name, fingerprint, fileName, duration}` | Identity + file fingerprint for the mismatch check |
+| `meta` | targeted on every join, + broadcast | `{name, joinedAt, fingerprint, fileName, duration}` | Identity, roster and host election. `joinedAt` is the sender's wall clock |
 
 | `ping` | request/response | `→ n`, `← n` | RTT probe. Uses `kind: 'request'` |
 
@@ -356,6 +376,28 @@ Read the Settings (⚙) rows to tell the cases apart:
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-26 — group rooms: roster, host, and a synchronised start
+
+The app is no longer strictly two-person. A room now holds **up to about six** people (Trystero
+builds a full mesh, so cost grows quadratically past that).
+
+- **Roster panel (👥)** listing everyone with a HOST / YOU badge, per-person latency, and an
+  OTHER FILE flag when someone's fingerprint differs from yours. The count sits on the button.
+  This exists as much for diagnosis as for features — the ghost-window failure was invisible
+  precisely because nothing ever showed you *who* was in the room.
+- **Host election** — earliest joiner, derived not stored, so it hands over automatically.
+- **"Start for everyone"**, host only: pulls the whole room to the host's position and plays.
+- **Anyone can pause and seek**, and it applies to everybody.
+- **Per-person everything**: chat messages carry the sender's name, peer video tiles are created
+  per person and stacked down the right edge, auto-duck watches every incoming stream and dips the
+  movie while *anyone* is talking, and a stall holds the room until the **last** person recovers.
+- `net.js` now exposes a participant registry (`participants`, `hostId`, `isHost`, `name(id)`)
+  instead of a single nominated peer.
+
+Verified with three simultaneous peers: consistent roster and host on all three, synchronised
+start (within 0.25s), non-host pause and seek propagating to everyone, chat attributed correctly,
+host handover on the host leaving, and dynamic tiles created/labelled/removed cleanly.
 
 ### 2026-07-26 — root cause found: both sides were connected to their own stale windows
 

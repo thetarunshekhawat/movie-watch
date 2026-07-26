@@ -29,7 +29,7 @@ const RELEASE_MS = 500;
  * one. Chat, reactions and playback sync then ride a data-only peer connection,
  * which is far more likely to survive between two networks with no TURN relay.
  */
-export async function startCall({ selfVideo, peerVideo, selfTile, peerTile, enabled = true }) {
+export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) {
   let stream = null;
   let error = null;
 
@@ -47,11 +47,38 @@ export async function startCall({ selfVideo, peerVideo, selfTile, peerTile, enab
     }
   }
 
-  restoreTilePositions(selfTile, peerTile);
+  placeSelfTile(selfTile);
   makeDraggable(selfTile, 'self');
-  makeDraggable(peerTile, 'peer');
   makeResizable(selfTile, 'self');
-  makeResizable(peerTile, 'peer');
+
+  /**
+   * peerId → tile element. Built on demand rather than declared in the HTML,
+   * because the room holds up to six people and we do not know who until they
+   * arrive. Tiles stack down the right-hand edge in arrival order.
+   */
+  const peerTiles = new Map();
+
+  function tileFor(peerId) {
+    let tile = peerTiles.get(peerId);
+    if (tile) return tile;
+
+    tile = document.createElement('div');
+    tile.className = 'tile';
+    tile.dataset.tile = 'peer';
+    tile.innerHTML =
+      '<video autoplay playsinline></video>' +
+      '<span class="tile-label"></span>' +
+      '<div class="tile-resize" data-resize="peer"></div>';
+    tiles.appendChild(tile);
+    peerTiles.set(peerId, tile);
+
+    stackTile(tile, peerTiles.size - 1);
+    // null key = do not persist. Peer ids are regenerated every session, so a
+    // saved position could never be matched back to the same person anyway.
+    makeDraggable(tile, null);
+    makeResizable(tile, null);
+    return tile;
+  }
 
   const call = {
     stream,
@@ -61,16 +88,27 @@ export async function startCall({ selfVideo, peerVideo, selfTile, peerTile, enab
     micOn: true,
     camOn: true,
 
-    attachPeer(peerStream) {
-      peerVideo.srcObject = peerStream;
-      peerTile.hidden = false;
-      duck.watch(peerStream);
+    attachPeer(peerId, peerStream) {
+      const tile = tileFor(peerId);
+      tile.querySelector('video').srcObject = peerStream;
+      tile.hidden = false;
+      duck.watch(peerId, peerStream, tile);
     },
 
-    detachPeer() {
-      peerVideo.srcObject = null;
-      peerTile.hidden = true;
-      duck.stop();
+    detachPeer(peerId) {
+      const tile = peerTiles.get(peerId);
+      if (tile) {
+        tile.querySelector('video').srcObject = null;
+        tile.remove();
+        peerTiles.delete(peerId);
+      }
+      duck.stop(peerId);
+    },
+
+    /** Label a tile once we know who it belongs to. */
+    setPeerName(peerId, name) {
+      const tile = peerTiles.get(peerId);
+      if (tile) tile.querySelector('.tile-label').textContent = name;
     },
 
     toggleMic() {
@@ -94,15 +132,17 @@ export async function startCall({ selfVideo, peerVideo, selfTile, peerTile, enab
       stream.getAudioTracks().forEach(t => (t.enabled = on));
     },
 
-    setPeerVolume(v) { peerVideo.volume = v; },
+    setPeerVolume(v) {
+      peerTiles.forEach(t => (t.querySelector('video').volume = v));
+    },
 
     stop() {
-      duck.stop();
+      duck.stopAll();
       stream?.getTracks().forEach(t => t.stop());
     },
   };
 
-  const duck = createDucker(peerTile);
+  const duck = createDucker();
   return { call, duck };
 }
 
@@ -114,11 +154,14 @@ export async function startCall({ selfVideo, peerVideo, selfTile, peerTile, enab
  * WebAudio, because piping a MediaElementSource would break the user's independent
  * volume slider and complicate muting.
  */
-function createDucker(peerTile) {
-  let ctx = null, analyser = null, source = null, raf = null;
-  let data = null;
-  let releaseTimer = null;
-  let speaking = false;
+function createDucker() {
+  /**
+   * One analyser per person, because in a group any of them talking should duck
+   * the movie, and each needs its own speaking indicator on its own tile.
+   * peerId → {analyser, source, data, tile, speaking, releaseTimer}
+   */
+  const watched = new Map();
+  let ctx = null, raf = null;
   let enabled = localStorage.getItem(DUCK_KEY) !== 'off';
 
   /** Set by main.js — receives a multiplier in [DUCK_TO, 1]. */
@@ -137,32 +180,38 @@ function createDucker(peerTile) {
 
   function loop() {
     raf = requestAnimationFrame(loop);
-    if (!analyser) return;
 
-    analyser.getByteTimeDomainData(data);
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) {
-      const v = (data[i] - 128) / 128;
-      sum += v * v;
-    }
-    const rms = Math.sqrt(sum / data.length);
+    let anySpeaking = false;
 
-    if (rms > SPEAK_THRESHOLD) {
-      if (!speaking) {
-        speaking = true;
-        peerTile.classList.add('speaking');
+    for (const w of watched.values()) {
+      w.analyser.getByteTimeDomainData(w.data);
+      let sum = 0;
+      for (let i = 0; i < w.data.length; i++) {
+        const v = (w.data[i] - 128) / 128;
+        sum += v * v;
       }
-      clearTimeout(releaseTimer);
-      releaseTimer = null;
-      target = enabled ? DUCK_TO : 1;
-    } else if (speaking && !releaseTimer) {
-      releaseTimer = setTimeout(() => {
-        speaking = false;
-        releaseTimer = null;
-        peerTile.classList.remove('speaking');
-        target = 1;
-      }, RELEASE_MS);
+      const rms = Math.sqrt(sum / w.data.length);
+
+      if (rms > SPEAK_THRESHOLD) {
+        if (!w.speaking) {
+          w.speaking = true;
+          w.tile?.classList.add('speaking');
+        }
+        clearTimeout(w.releaseTimer);
+        w.releaseTimer = null;
+      } else if (w.speaking && !w.releaseTimer) {
+        w.releaseTimer = setTimeout(() => {
+          w.speaking = false;
+          w.releaseTimer = null;
+          w.tile?.classList.remove('speaking');
+        }, RELEASE_MS);
+      }
+
+      if (w.speaking) anySpeaking = true;
     }
+
+    // Duck for as long as ANYONE is talking, and only lift when the room is quiet.
+    target = anySpeaking && enabled ? DUCK_TO : 1;
 
     ramp();
   }
@@ -172,18 +221,28 @@ function createDucker(peerTile) {
 
     set onLevel(fn) { onLevel = fn; },
 
-    watch(stream) {
+    watch(peerId, stream, tile) {
       if (!stream.getAudioTracks().length) return;
-      this.stop();
-      ctx = new (window.AudioContext || window.webkitAudioContext)();
-      source = ctx.createMediaStreamSource(stream);
-      analyser = ctx.createAnalyser();
+      this.stop(peerId);
+
+      // One shared AudioContext for the whole room — browsers cap how many you may
+      // open, and six people would otherwise mean six contexts.
+      ctx ||= new (window.AudioContext || window.webkitAudioContext)();
+
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
       // Deliberately NOT connected to ctx.destination — the <video> element already
       // plays this audio, and connecting would double it.
       source.connect(analyser);
-      data = new Uint8Array(analyser.fftSize);
-      loop();
+
+      watched.set(peerId, {
+        source, analyser, tile,
+        data: new Uint8Array(analyser.fftSize),
+        speaking: false, releaseTimer: null,
+      });
+
+      if (!raf) loop();
     },
 
     toggle() {
@@ -193,16 +252,29 @@ function createDucker(peerTile) {
       return enabled;
     },
 
-    stop() {
+    /** Stop watching one person (they left, or their camera went away). */
+    stop(peerId) {
+      const w = watched.get(peerId);
+      if (!w) return;
+      clearTimeout(w.releaseTimer);
+      w.source.disconnect();
+      w.tile?.classList.remove('speaking');
+      watched.delete(peerId);
+      if (!watched.size) this.stopAll();
+    },
+
+    stopAll() {
       if (raf) cancelAnimationFrame(raf);
-      clearTimeout(releaseTimer);
-      raf = releaseTimer = null;
-      source?.disconnect();
+      raf = null;
+      watched.forEach(w => {
+        clearTimeout(w.releaseTimer);
+        w.source.disconnect();
+        w.tile?.classList.remove('speaking');
+      });
+      watched.clear();
       ctx?.close().catch(() => {});
-      ctx = analyser = source = null;
-      speaking = false;
+      ctx = null;
       target = current = 1;
-      peerTile.classList.remove('speaking');
       onLevel(1);
     },
   };
@@ -221,19 +293,25 @@ function saveTile(key, patch) {
   localStorage.setItem(TILE_KEY, JSON.stringify(all));
 }
 
-function restoreTilePositions(selfTile, peerTile) {
-  const all = savedTiles();
-  const defaults = {
-    peer: { right: 18, top: 18, width: 200 },
-    self: { right: 18, top: 190, width: 150 },
-  };
-  for (const [key, tile] of [['self', selfTile], ['peer', peerTile]]) {
-    const s = { ...defaults[key], ...all[key] };
-    if (s.left != null) { tile.style.left = s.left + 'px'; tile.style.right = 'auto'; }
-    else { tile.style.right = (s.right ?? 18) + 'px'; }
-    tile.style.top = (s.top ?? 18) + 'px';
-    tile.style.width = (s.width ?? defaults[key].width) + 'px';
-  }
+/** Your own tile sits bottom-right of the stack, out of the way. */
+function placeSelfTile(selfTile) {
+  const s = { right: 18, top: 18, width: 150, ...savedTiles().self };
+  if (s.left != null) { selfTile.style.left = s.left + 'px'; selfTile.style.right = 'auto'; }
+  else { selfTile.style.right = (s.right ?? 18) + 'px'; }
+  selfTile.style.top = (s.top ?? 18) + 'px';
+  selfTile.style.width = (s.width ?? 150) + 'px';
+}
+
+/**
+ * Default position for the Nth peer tile: stacked down the right edge, below your
+ * own. Peer ids are regenerated every session, so saved positions cannot be keyed
+ * to a person — stacking by arrival order is the only stable default. Drag one and
+ * it stays put for the session.
+ */
+function stackTile(tile, index) {
+  tile.style.right = '18px';
+  tile.style.top = (150 + index * 170) + 'px';
+  tile.style.width = '200px';
 }
 
 function makeDraggable(tile, key) {
@@ -267,7 +345,7 @@ function makeDraggable(tile, key) {
     dragging = false;
     tile.classList.remove('dragging');
     try { tile.releasePointerCapture(e.pointerId); } catch {}
-    saveTile(key, {
+    if (key) saveTile(key, {
       left: parseFloat(tile.style.left),
       top: parseFloat(tile.style.top),
       right: null,
@@ -299,7 +377,7 @@ function makeResizable(tile, key) {
     if (!resizing) return;
     resizing = false;
     try { handle.releasePointerCapture(e.pointerId); } catch {}
-    saveTile(key, { width: parseFloat(tile.style.width) });
+    if (key) saveTile(key, { width: parseFloat(tile.style.width) });
   };
   handle.addEventListener('pointerup', end);
   handle.addEventListener('pointercancel', end);
