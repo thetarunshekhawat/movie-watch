@@ -27,8 +27,8 @@ rather than for scale.
 
 > ⚠️ **The section that rots fastest. Update it whenever anything lands.**
 
-**Phase:** Feature-complete and verified in two-browser testing. Not yet tested between
-two real machines across the internet, and not yet deployed.
+**Phase:** Feature-complete, verified in two-browser testing, and deployed to GitHub Pages.
+Not yet tested between two real machines across the internet.
 
 | Component | File | Status |
 |---|---|---|
@@ -42,7 +42,7 @@ two real machines across the internet, and not yet deployed.
 | Chat + reactions | `js/chat.js` | ✅ Done — verified peer-to-peer |
 | Layout / controls | `js/ui.js` | ✅ Done |
 | README | `README.md` | ✅ Done |
-| Deployed to GitHub Pages | — | ⬜ Not started |
+| Deployed to GitHub Pages | — | ✅ Live at `https://thetarunshekhawat.github.io/movie-watch/` |
 
 **Verified working** (two Chromium tabs, same room, real Nostr relay handshake):
 peer connection, reference/follower role split, play/pause sync (landed at identical
@@ -167,6 +167,15 @@ clocks are not synchronised) — only the RTT-derived `oneWay` estimate is used 
 
 > Append to this as new ones are hit. Each one here cost real debugging time.
 
+**An author `display` rule silently defeats the `hidden` attribute.** *(Found after deploying —
+"Join room" appeared to do nothing.)* The UA stylesheet's `[hidden] { display: none }` is an
+**author-vs-UA origin** conflict, not a specificity one: any author rule that sets `display` on
+the same element wins, however weak its selector. `.lobby { display: grid }` meant
+`lobby.hidden = true` had no effect at all, so the player started up perfectly *behind* a lobby
+that never went away. Every panel in this app is toggled with `.hidden`, so
+`[hidden] { display: none !important; }` in `css/style.css` is load-bearing — do not remove it,
+and do not switch any `hidden`-toggled element to a class that sets `display`.
+
 **Echo suppression is load-bearing.** Applying a remote pause calls `video.pause()`, which fires a
 local `pause` event, which broadcasts a pause back — an infinite loop. A module-level
 `applyingRemote` flag is set around every programmatic `play()`/`pause()`/`currentTime=` and cleared
@@ -257,7 +266,8 @@ RTT is ~2ms and no TURN relay is needed. Real-world latency and the TURN fallbac
 
 1. **Run it with a real camera** — open two browser windows (one incognito), allow camera access,
    and check auto-duck, the tiles, and fullscreen. This is the largest untested area.
-2. **Deploy to GitHub Pages** and confirm `getUserMedia` works over HTTPS.
+2. **Confirm `getUserMedia` works over HTTPS on the deployed site** — it is live, but the camera
+   prompt has not been exercised there yet.
 3. **Test across two networks** with a real second person — this is the only way to exercise the
    TURN fallback path.
 4. Consider reordering/pinning Nostr relays to drop the one with the bad certificate.
@@ -269,6 +279,17 @@ RTT is ~2ms and no TURN relay is needed. Real-world latency and the TURN fallbac
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-26 — fixed: "Join room" appeared to do nothing
+
+- **Fixed: the lobby never hid.** `.lobby { display: grid }` (author origin) overrode the UA
+  `[hidden] { display: none }`, so `$('lobby').hidden = true` was a no-op. The player was starting
+  correctly the whole time — it was just rendered behind the lobby, which still covered the screen.
+  Added `[hidden] { display: none !important; }` near the top of `css/style.css`.
+- Verified against the live GitHub Pages build (lobby stayed `display: grid` with `hidden` set) and
+  then end-to-end locally: pick file → Join room → lobby `none`, stage `block`, no page errors
+  beyond the known `schnorr.me` relay noise.
+- New entry under **Gotchas & learnings**.
 
 ### 2026-07-26 — all components built and verified
 - Built the full app: lobby, player, sync engine, WebRTC call, chat, reactions, subtitles.

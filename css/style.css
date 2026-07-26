@@ -20,6 +20,14 @@
 
 * { box-sizing: border-box; }
 
+/* The UA rule for [hidden] is `display: none`, but ANY author rule that sets
+   `display` on the same element beats it — author origin outranks UA origin
+   regardless of specificity. `.lobby { display: grid }` silently defeated
+   `lobby.hidden = true`, so clicking "Join room" started the player behind a
+   lobby that never went away. Everything in this app is shown/hidden with the
+   `hidden` property, so this rule is load-bearing. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
