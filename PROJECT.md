@@ -190,12 +190,16 @@ indistinguishable from a broken sync engine. `pagehide` is now wired alongside `
 cut down on ghosts in the first place, but it cannot catch every case — a crashed or force-quit
 browser always leaves one.
 
-**Pin the Nostr relays; the defaults include dead ones.** Two peers only find each other if they
-share a working relay. Verified from here: `schnorr.me`, `relay.agorist.space` and
-`relay.nostr.bg` refuse the connection outright and `relay.nostr.band` times out. Dead relays do
-not just make noise — they consume the redundancy budget, so the two sides can end up subscribed
-to disjoint sets of working relays and never discover each other at all. `net.js` now pins six
-verified relays with `redundancy: 4`.
+**Do NOT pin a hand-picked Nostr relay list.** *(Tried it; it broke discovery completely — nobody
+could connect at all.)* The trap is that "the WebSocket opens" is not the same as "this relay
+works". Trystero signals over Nostr *ephemeral* events, and plenty of relays accept a connection
+while silently declining to forward them — caching and aggregator services especially. Four of the
+six relays in that attempt (`relay.primal.net`, `relay.snort.social`, `nostr.mom`, `offchain.pub`)
+are absent from Trystero's own 47-relay default list for exactly that reason, and with
+`redundancy: 4` a peer could draw four duds and be unreachable. The cert errors thrown by a couple
+of the defaults are console noise, not a functional problem; redundancy exists to absorb that.
+Leave relay selection alone unless you can test end-to-end discovery, from two networks, against
+any replacement list.
 
 **`room.addStream(stream)` only reaches peers who are ALREADY in the room.** *(Found after the
 first real two-machine session — neither person could see the other's camera.)* It is not a
@@ -363,9 +367,10 @@ browser had connected to a leftover Movie Watch window on its own laptop; **the 
 discovered each other at all.** Every earlier theory (renegotiation killing the link, TURN) was
 wrong, or at least unproven — there was never a cross-machine connection to break.
 
-- **Pinned the Nostr relay list** to six verified-reachable relays with `redundancy: 4`. Four of
-  the defaults are dead from here and were burning redundancy budget, which is a plausible reason
-  the two machines never met. Also silences the console cert spam.
+- **Pinned the Nostr relay list — then reverted it the same session.** It broke discovery outright
+  (both sides stuck on "Connecting…"). The relays were chosen on "the WebSocket opens", which does
+  not imply they forward Nostr ephemeral events. See the gotcha; do not retry this without
+  two-network discovery testing.
 - **Added a `host/host` warning banner** naming the peer, so a local-only connection announces
   itself instead of masquerading as success.
 - **Added a "Watching with" diagnostics row** showing the peer's name and your own side by side.
