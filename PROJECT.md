@@ -27,8 +27,12 @@ rather than for scale.
 
 > ⚠️ **The section that rots fastest. Update it whenever anything lands.**
 
-**Phase:** Feature-complete and verified in two-browser testing. Not yet tested between
-two real machines across the internet, and not yet deployed.
+**Phase:** Deployed and verified end-to-end over the public internet from the live HTTPS URL.
+Still not tested between two *physically separate machines on different networks* — both peers
+in every test so far have been browser contexts on one machine.
+
+**Live URL:** https://thetarunshekhawat.github.io/movie-watch/
+**Repo:** https://github.com/thetarunshekhawat/movie-watch (public, Pages from `main` root)
 
 | Component | File | Status |
 |---|---|---|
@@ -42,7 +46,7 @@ two real machines across the internet, and not yet deployed.
 | Chat + reactions | `js/chat.js` | ✅ Done — verified peer-to-peer |
 | Layout / controls | `js/ui.js` | ✅ Done |
 | README | `README.md` | ✅ Done |
-| Deployed to GitHub Pages | — | ⬜ Not started |
+| Deployed to GitHub Pages | — | ✅ Done — HTTPS live, all assets 200, HTTP 301s to HTTPS |
 
 **Verified working** (two Chromium tabs, same room, real Nostr relay handshake):
 peer connection, reference/follower role split, play/pause sync (landed at identical
@@ -51,9 +55,16 @@ correction, chat with floating bubbles and unread badge, emoji reactions, SRT→
 subtitle conversion, per-person volume and subtitle independence, sync-offset
 persistence, and the file-mismatch warning.
 
+**Verified on the deployed HTTPS site** (two browser contexts, real Nostr relay handshake,
+no local server involved): `window.isSecureContext === true` and `getUserMedia` exposed,
+Trystero 0.25.3 loads all four chunks from the CDN, peer discovery and the `meta` name
+exchange, play sync (peers landed 40ms apart), seek sync (50ms apart), pause sync (both at
+an identical 26.87s), and the no-camera fallback banner.
+
 **Not yet verified:** anything involving a real camera or microphone (auto-duck,
 tile rendering, echo behaviour, push-to-talk), fullscreen overlay behaviour, and
-connection between two machines on different networks (the TURN fallback path).
+connection between two machines on different networks (which is now the *only* path
+to a relayed connection, and there is no TURN server configured — see below).
 
 ---
 
@@ -167,6 +178,28 @@ clocks are not synchronised) — only the RTT-derived `oneWay` estimate is used 
 
 > Append to this as new ones are hit. Each one here cost real debugging time.
 
+**A CSS `display` rule silently defeats the `hidden` attribute.** *(Found on the deployed site
+— the lobby stayed on screen after joining.)* The browser implements `hidden` as
+`[hidden] { display: none }` in its *user-agent* stylesheet, and any author rule with real
+specificity outranks it. `.lobby { display: grid }` meant `lobby.hidden = true` did nothing:
+the peer was fully connected and the movie was playing at 26s, but the user only saw the lobby
+card with the movie pushed off-screen below it. `#emojiPicker`, `#settingsPanel` and `#chatPanel`
+had the same latent defect. **The DOM lies about this** — `el.hidden` reads `true` while
+`getComputedStyle(el).display` reads `grid`, so any check that trusts the property passes.
+Verify with `getComputedStyle`, or take a screenshot. Fixed globally with
+`[hidden] { display: none !important; }` in the reset block of `css/style.css`.
+
+**The free public TURN servers are gone.** *(Found when preparing the first internet test.)*
+`openrelay.metered.ca` with the `openrelayproject` credentials was the standard answer for
+years and is dead: it now serves plain HTTP on TCP 80, refuses TCP 443, and never answers a
+TURN Allocate request on UDP 80/443/3478. Confirmed it was not a local network problem by
+getting clean STUN binding responses from `stun.l.google.com` and `stun.cloudflare.com` on the
+same machine at the same time. Of the once-standard public relays only `turn.cloudflare.com`
+still answers, and it returns 401 — every survivor requires an account, because open relays get
+abused as proxies. `TURN` in `net.js` is therefore an empty list, which is *better* than a dead
+entry: ICE gathering no longer waits on a server that will never reply. Two ordinary home
+connections do not need TURN; mobile hotspots, CGNAT and corporate wifi do.
+
 **Echo suppression is load-bearing.** Applying a remote pause calls `video.pause()`, which fires a
 local `pause` event, which broadcasts a pause back — an infinite loop. A module-level
 `applyingRemote` flag is set around every programmatic `play()`/`pause()`/`currentTime=` and cleared
@@ -244,23 +277,38 @@ it shows a warning banner and sync keeps working.
 **Fullscreen overlay is unverified.** The code deliberately fullscreens the `#stage` container
 rather than the `<video>`, which is the documented fix, but this has not been observed working.
 
-**One Nostr relay throws cert errors.** `wss://schnorr.me/` fails with
-`ERR_CERT_AUTHORITY_INVALID` and spams the console. Harmless — Trystero connects through the other
-relays — but it makes the console noisy when debugging.
+**Cross-network connection untested.** Both peers have only ever been browser contexts on one
+machine. The relay path is now not just unproven but *unconfigured* — `TURN` in `net.js` is an
+empty list because no credential-free public TURN server exists any more. Two home broadband
+connections should still connect directly on STUN alone; a mobile hotspot, CGNAT or corporate
+network on either side will hang at "waiting for peer". Diagnose in `chrome://webrtc-internals`:
+ICE going `checking` → `failed` with no `relay` candidates is this. Fix by pasting free Metered
+credentials into the documented block in `net.js`.
 
-**Cross-network connection untested.** Both peers have only ever been tabs on one machine, where
-RTT is ~2ms and no TURN relay is needed. Real-world latency and the TURN fallback are unproven.
+**One Nostr relay retries its cert failure forever.** `wss://schnorr.me/` logged 14
+`ERR_CERT_AUTHORITY_INVALID` errors in a two-minute session and never backs off. Harmless to
+function — the handshake completes through the other relays — but it buries any real error in
+the console, which is exactly when you need the console.
+
+**The controls cannot be clicked by a script.** `#controls` is `pointer-events: none` while the
+stage is idle (deliberate auto-hide). A `pointermove` on `#stage` flips it to `auto`, but it
+reverts before Playwright's actionability check finishes, so `click` times out anyway. Drive
+playback with the keyboard shortcuts instead (`Space`, `←`, `→`) — that is a real user path and
+it works reliably under automation.
 
 ---
 
 ## Next steps
 
-1. **Run it with a real camera** — open two browser windows (one incognito), allow camera access,
-   and check auto-duck, the tiles, and fullscreen. This is the largest untested area.
-2. **Deploy to GitHub Pages** and confirm `getUserMedia` works over HTTPS.
-3. **Test across two networks** with a real second person — this is the only way to exercise the
-   TURN fallback path.
-4. Consider reordering/pinning Nostr relays to drop the one with the bad certificate.
+1. **Run it with a real camera** — open two browser windows (one incognito) on the live URL,
+   allow camera access, and check auto-duck, the tiles, and fullscreen. This is the largest
+   untested area, and headless testing structurally cannot cover it.
+2. **Test across two networks** with a real second person. This is the only remaining unknown
+   in the connection path.
+3. **Decide on TURN before that test.** If either side is on a hotspot, CGNAT or office wifi,
+   the session will not connect at all without it. A free Metered account takes two minutes and
+   the paste target is documented in `net.js`.
+4. Pin the Nostr relay list to drop `schnorr.me`, whose cert failure floods the console.
 5. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
    sessions, so the movie doesn't have to be re-picked every time.
 
@@ -269,6 +317,23 @@ RTT is ~2ms and no TURN relay is needed. Real-world latency and the TURN fallbac
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-26 — deployed, and verified end-to-end over the internet
+- **Shipped to GitHub Pages:** https://thetarunshekhawat.github.io/movie-watch/ — public repo,
+  Pages from `main` root. Every asset returns 200 over HTTPS and plain HTTP 301s up to it.
+- **Verified the real thing, not a local server:** two browser contexts on the deployed URL
+  found each other through the public Nostr relays and stayed in sync. Play landed 40ms apart,
+  seek 50ms apart, pause at an identical 26.87s. `isSecureContext` is true and `getUserMedia`
+  is exposed, so the camera path is unblocked by hosting.
+- **Fixed: the lobby covered the session after joining.** `.lobby { display: grid }` outranked
+  the user-agent `[hidden] { display: none }`, so `lobby.hidden = true` had no effect. The peer
+  was connected and the movie was playing at 26s while the user still saw only the lobby.
+  `#emojiPicker`, `#settingsPanel` and `#chatPanel` shared the defect. Fixed globally with
+  `[hidden] { display: none !important; }`.
+- **Removed the dead TURN config.** `openrelay.metered.ca` no longer answers TURN at all;
+  keeping it only cost ICE gathering time and console noise. `TURN` is now an empty list with
+  the paste target for real credentials documented inline.
+- Recorded four new entries under **Gotchas & learnings**.
 
 ### 2026-07-26 — all components built and verified
 - Built the full app: lobby, player, sync engine, WebRTC call, chat, reactions, subtitles.
