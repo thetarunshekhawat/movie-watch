@@ -41,7 +41,7 @@ on its own machine.
 | Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified |
 | Player + file handling | `js/player.js` | ✅ Done — codec + audio preflight, fingerprint |
 | Subtitles | `js/subs.js` | ✅ Done — SRT→VTT verified |
-| Video call + auto-duck | `js/call.js` | ⚠️ Opt-in, off by default. Needs TURN to work across networks |
+| Video call + auto-duck | `js/call.js` | ✅ Verified 3-way with synthetic cameras. Opt-in, off by default; real webcams and cross-network still unproven |
 | Chat + reactions | `js/chat.js` | ✅ Done — verified peer-to-peer |
 | Layout / controls | `js/ui.js` | ✅ Done |
 | README | `README.md` | ✅ Done |
@@ -56,9 +56,15 @@ emoji reactions, SRT→VTT subtitle conversion, per-person volume and subtitle
 independence, sync-offset persistence, the file-mismatch flag, and dynamic peer
 tiles created/labelled/removed cleanly.
 
-**Not yet verified:** a real camera or microphone (auto-duck, echo behaviour,
-push-to-talk), fullscreen overlay behaviour, and — the big one — any connection
-between two machines on different networks.
+**Camera path verified 3-way** by substituting a canvas `captureStream` for
+`getUserMedia` before joining, which exercises the real code path
+(`startCall` → `addStream` → targeted re-send on join → `onPeerStream` → tile):
+all three peers received both other streams, tiles were labelled correctly, and
+playback sync held while three cameras were streaming.
+
+**Not yet verified:** a physical camera or microphone (so echo behaviour and
+push-to-talk are still untested), fullscreen overlay behaviour, and — the big
+one — any connection between two machines on different networks.
 
 ---
 
@@ -220,6 +226,11 @@ are absent from Trystero's own 47-relay default list for exactly that reason, an
 of the defaults are console noise, not a functional problem; redundancy exists to absorb that.
 Leave relay selection alone unless you can test end-to-end discovery, from two networks, against
 any replacement list.
+
+**Name and stream arrive in either order, so both paths must label the tile.** *(Found in the
+camera end-to-end test — every tile rendered video with a blank name.)* A peer tile is only created
+when their stream arrives, so a `meta` that landed first called `setPeerName` on a tile that did
+not exist yet and the name was silently dropped. Both `onStream` and the roster render now set it.
 
 **`room.addStream(stream)` only reaches peers who are ALREADY in the room.** *(Found after the
 first real two-machine session — neither person could see the other's camera.)* It is not a

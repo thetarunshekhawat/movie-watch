@@ -250,6 +250,10 @@ async function start(roomCode) {
       list.appendChild(li);
     }
 
+    // Re-label tiles from the roster as well. Names and streams arrive in either
+    // order, so whichever lands second has to do the labelling.
+    for (const p of people) if (!p.isSelf) call?.setPeerName(p.id, p.name);
+
     $('rosterCount').textContent = String(people.length);
     $('startAllBtn').hidden = !net.isHost;
     $('rosterHint').textContent = net.isHost
@@ -318,8 +322,12 @@ async function start(roomCode) {
 
   // Streams can arrive before the local call object exists; hold them until then.
   net.onStream = (stream, from) => {
-    if (call) call.attachPeer(from, stream);
-    else pendingStreams.push([from, stream]);
+    if (!call) { pendingStreams.push([from, stream]); return; }
+    call.attachPeer(from, stream);
+    // Label it immediately. The tile is only created here, so a `meta` that
+    // arrived FIRST set the name on a tile that did not exist yet and was lost —
+    // which is exactly how every tile ended up blank.
+    call.setPeerName(from, net.name(from));
   };
 
   // Wired here, before the await, for the reason documented at the top of this
