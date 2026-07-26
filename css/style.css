@@ -168,6 +168,62 @@ input  { font: inherit; }
   font-size: 13px;
 }
 
+/* ── Create / join choice ── */
+
+.choice { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+
+.choice-btn {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  width: 100%;
+  padding: 18px;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  transition: border-color .15s, background .15s, transform .1s;
+}
+.choice-btn:hover { border-color: var(--accent); background: #23262f; }
+.choice-btn:active { transform: scale(.99); }
+.choice-icon { font-size: 26px; flex: none; }
+.choice-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.choice-text b { font-size: 15px; }
+
+.back-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.back-link:hover { color: var(--text); }
+
+/* ── Connection status card ── */
+
+.status-card { text-align: center; }
+.status-card h2 { margin: 0 0 8px; font-size: 20px; }
+.status-body { margin: 0; color: var(--text-dim); font-size: 14px; white-space: pre-line; }
+.status-body code {
+  color: var(--accent-2);
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+.status-actions { margin-top: 24px; }
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  margin: 4px auto 20px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* ═══════════════════ STAGE ═══════════════════ */
 
 .stage {
@@ -229,6 +285,18 @@ input  { font: inherit; }
   word-break: break-all;
   user-select: all;
 }
+.banner-action {
+  display: block;
+  margin-top: 9px;
+  padding: 7px 12px;
+  background: rgba(255,255,255,.14);
+  border: 1px solid rgba(255,255,255,.25);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.banner-action:hover { background: rgba(255,255,255,.24); }
+
 .banner-x {
   float: right;
   background: none;
@@ -245,7 +313,7 @@ input  { font: inherit; }
    height, which silently clamped every peer tile to the top edge — they could
    only be moved sideways. `pointer-events: none` keeps the layer from swallowing
    clicks meant for the control bar; the tiles themselves opt back in. */
-#peerTiles {
+#tiles {
   position: absolute;
   inset: 0;
   z-index: 30;
@@ -318,6 +386,115 @@ input  { font: inherit; }
   background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,.5) 50%);
 }
 .tiles-hidden .tile { display: none; }
+
+/* ═══════════════════ WAITING ROOM ═══════════════════ */
+
+/* While the room is gathering, the tile layer stops being a free-drag surface
+   and becomes a grid of faces above the waiting-room card — this is a conversation,
+   not a movie, so the faces should be the biggest thing on screen.
+
+   The `!important` is doing real work: placeTile() writes `left`/`top` straight
+   onto the element's style attribute, and only an important declaration outranks
+   an inline one. Dropping `.phase-lobby` hands every tile straight back to its
+   saved floating position with nothing to undo. */
+.stage.phase-lobby #tiles {
+  inset: auto 0 auto 0;
+  top: 6vh;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-content: flex-start;
+  gap: 14px;
+  padding: 0 18px;
+}
+/* `relative`, NOT `static`. The name label and the mute badge inside a tile are
+   absolutely positioned, so they need the tile itself to be their containing
+   block — with `static` they escape to #tiles and the label detaches from the
+   face it belongs to, stranded at the corner of the screen.
+   left/top/right are neutralised too, or the inline values placeTile() wrote for
+   the floating layout would come back as relative nudges. */
+.stage.phase-lobby .tile {
+  position: relative !important;
+  left: auto !important;
+  right: auto !important;
+  top: auto !important;
+  width: min(280px, 34vw) !important;
+  cursor: default;
+}
+.stage.phase-lobby .tile-resize { display: none; }
+
+.green-room {
+  position: absolute;
+  inset: 0;
+  z-index: 38;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 18px 120px;
+  pointer-events: none;         /* the card opts back in; tiles stay clickable */
+  background: linear-gradient(to bottom, transparent 30%, rgba(8,9,12,.86) 78%);
+}
+
+.green-card {
+  pointer-events: auto;
+  width: min(460px, 100%);
+  max-height: 62vh;
+  overflow-y: auto;
+  padding: 22px;
+  background: rgba(16,18,25,.94);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  backdrop-filter: blur(18px);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.green-card h2 { margin: 0 0 5px; font-size: 20px; }
+.green-sub { margin: 0 0 18px; color: var(--text-dim); font-size: 13.5px; }
+
+.green-code {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.green-code code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent-2);
+}
+
+.green-card .roster { text-align: left; margin-bottom: 16px; }
+.green-wait { margin: 0; color: var(--text-dim); font-size: 13.5px; }
+.green-tips { margin: 16px 0 0; font-size: 11.5px; line-height: 1.7; }
+
+/* ── "X wants to join" ── */
+.join-request {
+  position: absolute;
+  top: 18px; right: 18px;
+  z-index: 52;
+  width: min(280px, 80%);
+  padding: 15px 16px;
+  background: rgba(16,18,25,.97);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
+  animation: drop .25s ease;
+}
+.jr-title { margin: 0 0 3px; font-size: 14px; }
+.jr-sub { margin: 0 0 13px; color: var(--text-dim); font-size: 12px; }
+.jr-actions { display: flex; gap: 8px; }
+.jr-actions .btn-primary { flex: 1; }
+#jrQueue { margin: 10px 0 0; }
 
 /* ── Chat bubbles over the video ── */
 .bubbles {
@@ -441,6 +618,11 @@ input  { font: inherit; }
   padding: 10px 9px;
 }
 .ctl.active { background: rgba(78,205,196,.22); border-color: rgba(78,205,196,.5); }
+/* Disabled while the waiting room is up, or while the host has taken playback
+   control. Greyed rather than hidden so it reads as "not now", not "gone". */
+.ctl:disabled { opacity: .3; cursor: not-allowed; }
+.ctl:disabled:hover { background: rgba(255,255,255,.07); }
+.scrub:disabled { opacity: .35; cursor: not-allowed; }
 .ctl.off    { opacity: .45; }
 /* synced controls get a subtle link marker */
 .ctl.synced::after {
@@ -603,6 +785,21 @@ input  { font: inherit; }
   font-size: 11px;
   color: var(--text-dim);
 }
+.field-inline input[type=checkbox] { flex: none; accent-color: var(--accent); width: 17px; height: 17px; }
+.field-inline select {
+  flex: none;
+  padding: 6px 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.field-inline > span { min-width: 0; }
+.field-inline .hint { display: block; }
+
+#hostControls .field-inline { align-items: flex-start; margin-bottom: 16px; }
 
 .diag { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 12px; }
 .diag dt { color: var(--text-dim); }

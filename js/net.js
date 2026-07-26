@@ -93,6 +93,27 @@ export function connect(roomCode) {
   // cosmetic — nothing in sync or playback depends on it.
   const av    = room.makeAction('av');
 
+  /**
+   * Room state, issued by the host: has the movie started, and what has the host
+   * allowed. Broadcast when it changes and sent targeted on every join, so a
+   * newcomer knows within one round trip whether they have walked into a waiting
+   * room or a film already in progress.
+   */
+  const phase = room.makeAction('phase');
+
+  /**
+   * "The movie has already started — please let me in", sent to the host, and the
+   * host's answer coming back.
+   *
+   * This is an honour-system door, not a lock. Trystero has already connected the
+   * peer at the data layer by the time they knock, and without a server there is
+   * nothing that could prevent that. It works because everyone in a movie night
+   * is running this same code — it is a doorbell, not authentication, and
+   * PROJECT.md says so.
+   */
+  const knock   = room.makeAction('knock');
+  const verdict = room.makeAction('verdict');
+
   // Request-kind action: the peer echoes back whatever we send, letting us time it.
   const ping = room.makeAction('ping', {
     kind: 'request',
@@ -248,6 +269,11 @@ export function connect(roomCode) {
     sendMeta:  (d, target) => meta.send(d, target ? { target } : undefined),
     // Targeted on join (so a newcomer sees correct badges), broadcast on toggle.
     sendAv:    (d, target) => av.send(d, target ? { target } : undefined),
+    // Same pattern: targeted on join so a latecomer learns the room state, and
+    // broadcast whenever the host changes it.
+    sendPhase: (d, target) => phase.send(d, target ? { target } : undefined),
+    sendKnock:   (d, target) => knock.send(d, { target }),
+    sendVerdict: (d, target) => verdict.send(d, { target }),
 
     // ── receivers, assigned by main.js. All get (data, senderPeerId). ──
     onCtrl:     () => {},
@@ -257,6 +283,9 @@ export function connect(roomCode) {
     onReact:    () => {},
     onMeta:     () => {},
     onAv:       () => {},
+    onPhase:    () => {},
+    onKnock:    () => {},
+    onVerdict:  () => {},
     onPeerJoin: () => {},
     onPeerLeave:() => {},
     onStream:   () => {},
@@ -317,7 +346,10 @@ export function connect(roomCode) {
   stall.onMessage = (d, { peerId: from }) => net.onStall(d, from);
   chat.onMessage  = (d, { peerId: from }) => net.onChat(d, from);
   react.onMessage = (d, { peerId: from }) => net.onReact(d, from);
-  av.onMessage    = (d, { peerId: from }) => net.onAv(d, from);
+  av.onMessage      = (d, { peerId: from }) => net.onAv(d, from);
+  phase.onMessage   = (d, { peerId: from }) => net.onPhase(d, from);
+  knock.onMessage   = (d, { peerId: from }) => net.onKnock(d, from);
+  verdict.onMessage = (d, { peerId: from }) => net.onVerdict(d, from);
 
   // Meta doubles as the roster feed: it is how we learn names and join times, and
   // therefore how the host is decided.

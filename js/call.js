@@ -33,38 +33,27 @@ const DUCK_TO = 0.3;
 const RELEASE_MS = 500;
 
 /**
- * `enabled: false` means the user deliberately chose to watch without cameras.
- * That is not an error state — we skip getUserMedia entirely, so there is no
- * permission prompt, no media track, and crucially no ICE renegotiation to send
- * one. Chat, reactions and playback sync then ride a data-only peer connection,
- * which is far more likely to survive between two networks with no TURN relay.
+ * Set up the call layer WITHOUT touching the camera.
+ *
+ * Acquiring the camera is deliberately a separate step (`call.enable()`), because
+ * it is the one action here that changes the shape of every peer connection:
+ * `room.addStream()` forces an ICE renegotiation, and with no TURN relay that can
+ * kill a connection which was working perfectly for data. Keeping it separate
+ * means the camera can be turned on at any moment in the session — nobody is
+ * locked out of video by a checkbox they didn't tick — while a session that never
+ * turns it on never pays that cost at all.
+ *
+ * `onEnabled(stream)` is how main.js learns it has a stream to send. It fires once
+ * per successful acquisition, whenever that happens.
  */
-export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) {
+export async function startCall({ selfVideo, selfTile, tiles, onEnabled = () => {} }) {
   let stream = null;
   let error = null;
   const duck = createDucker();
 
-  if (enabled) {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-      selfVideo.srcObject = stream;
-      selfTile.hidden = false;
-    } catch (err) {
-      // Denied or no device. The movie half of the app still works fine.
-      error = err;
-    }
-  }
-
   placeTile(selfTile, 'self', { right: 18, top: 18 });
   makeDraggable(selfTile, 'self');
   makeResizable(selfTile, 'self');
-
-  // Analyse our own mic so our own tile lights up while we talk. Excluded from
-  // ducking (see SELF above).
-  if (stream) duck.watch(SELF, stream, selfTile, { selfOnly: true });
 
   /**
    * peerId → tile element. Built on demand rather than declared in the HTML,
@@ -100,12 +89,53 @@ export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) 
   }
 
   const call = {
-    stream,
-    error,
-    /** True when the user chose to watch without cameras — distinct from `error`. */
-    off: !enabled,
+    /**
+     * Getters, not fixed values: the camera can arrive at any point in the
+     * session, so anything that captured `call.stream` once would still be
+     * holding null long after the camera came up.
+     */
+    get stream() { return stream; },
+    get error() { return error; },
+    get live() { return stream != null; },
+
     micOn: true,
     camOn: true,
+
+    /**
+     * Acquire the camera and mic. Safe to call repeatedly — the second call is a
+     * no-op, so button handlers don't have to guard.
+     *
+     * Returns the stream, or null if the user denied permission or has no device.
+     * A denial is not fatal: the movie, sync and chat are unaffected, which is why
+     * the failure is recorded rather than thrown.
+     */
+    async enable() {
+      if (stream) return stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
+      } catch (err) {
+        error = err;
+        return null;
+      }
+
+      error = null;
+      selfVideo.srcObject = stream;
+      selfTile.hidden = false;
+      call.micOn = true;
+      call.camOn = true;
+      setTileAv(selfTile, { mic: true, cam: true });
+
+      // Analyse our own mic so our own tile lights up while we talk. Excluded
+      // from ducking (see SELF above) — dipping the movie whenever WE speak
+      // would be maddening.
+      duck.watch(SELF, stream, selfTile, { selfOnly: true });
+
+      onEnabled(stream);
+      return stream;
+    },
 
     attachPeer(peerId, peerStream) {
       const tile = tileFor(peerId);
@@ -142,16 +172,25 @@ export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) 
       if (tile) setTileAv(tile, state);
     },
 
-    toggleMic() {
-      if (!stream) return false;
+    /**
+     * Mic and camera toggles.
+     *
+     * With no stream yet, the first press acquires one — that is what makes these
+     * buttons a genuine on/off switch at any point in the movie rather than a
+     * decision frozen in the lobby. Once a stream exists we only flip
+     * `track.enabled`, which sends silence/a frozen frame down the existing
+     * transceiver and triggers NO renegotiation.
+     */
+    async toggleMic() {
+      if (!stream) return (await call.enable()) ? call.micOn : false;
       call.micOn = !call.micOn;
       stream.getAudioTracks().forEach(t => (t.enabled = call.micOn));
       setTileAv(selfTile, { mic: call.micOn, cam: call.camOn });
       return call.micOn;
     },
 
-    toggleCam() {
-      if (!stream) return false;
+    async toggleCam() {
+      if (!stream) return (await call.enable()) ? call.camOn : false;
       call.camOn = !call.camOn;
       stream.getVideoTracks().forEach(t => (t.enabled = call.camOn));
       setTileAv(selfTile, { mic: call.micOn, cam: call.camOn });
