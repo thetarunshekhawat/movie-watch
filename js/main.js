@@ -204,7 +204,7 @@ async function start(roomCode) {
   net.onChat = ({ text, mediaTime }) => chat.receive({ text, mediaTime });
   net.onReact = ({ emoji }) => chat.receiveReaction(emoji);
 
-  net.onPeerJoin = () => {
+  net.onPeerJoin = id => {
     $('connDot').dataset.state = 'connected';
     $('connText').textContent = 'Connected';
     $('diagRole').textContent = net.isReference ? 'reference' : 'follower';
@@ -214,6 +214,14 @@ async function start(roomCode) {
       fileName: movieFile.name,
       duration: video.duration,
     });
+
+    // Send them our camera. This is REQUIRED, not a retry: room.addStream() only
+    // reaches peers already in the room, and when we called it after the camera
+    // prompt the room was still empty (peer discovery is slower than clicking
+    // "Allow"). Without this line neither side ever receives the other's video —
+    // verified, both peers saw only themselves.
+    if (call?.stream) net.addStream(call.stream, id);
+
     // Bring them to our current position immediately.
     sync.forceResync();
   };
@@ -231,6 +239,25 @@ async function start(roomCode) {
     else pendingStream = stream;
   };
 
+  // Wired here, before the await, for the reason documented at the top of this
+  // block: the peer's meta arrives while the camera prompt is still open, and a
+  // handler assigned after the await misses it entirely (no peer name, no
+  // file-mismatch warning).
+  net.onMeta = ({ name, fingerprint: theirFp, fileName }) => {
+    peerName = name || 'Them';
+    chat.peerName = peerName;
+    $('peerLabel').textContent = peerName;
+
+    if (theirFp && movieFp && theirFp !== movieFp) {
+      banner(banners, {
+        id: 'mismatch', kind: 'warn', sticky: true,
+        title: 'You two have different files',
+        body: `Yours: ${movieFile.name} · Theirs: ${fileName}. Timestamps may not line up — `
+            + 'use the sync offset in Settings (⚙) to correct it.',
+      });
+    }
+  };
+
   // ── call (async — everything above must already be wired) ──
   ({ call, duck } = await startCall({
     selfVideo: $('selfVideo'),
@@ -246,6 +273,8 @@ async function start(roomCode) {
       body: 'Sync still works, but you won\'t see or hear each other. Check the browser permission prompt.',
     });
   } else {
+    // Covers the other ordering: a peer who was already here when the camera came
+    // up. The targeted re-send in onPeerJoin covers peers who arrive after.
     net.addStream(call.stream);
   }
 
@@ -260,21 +289,6 @@ async function start(roomCode) {
   video.volume = userVolume;
   $('volume').value = userVolume;
   duck.onLevel = mult => { video.volume = Math.max(0, Math.min(1, userVolume * mult)); };
-
-  net.onMeta = ({ name, fingerprint: theirFp, fileName }) => {
-    peerName = name || 'Them';
-    chat.peerName = peerName;
-    $('peerLabel').textContent = peerName;
-
-    if (theirFp && movieFp && theirFp !== movieFp) {
-      banner(banners, {
-        id: 'mismatch', kind: 'warn', sticky: true,
-        title: 'You two have different files',
-        body: `Yours: ${movieFile.name} · Theirs: ${fileName}. Timestamps may not line up — `
-            + 'use the sync offset in Settings (⚙) to correct it.',
-      });
-    }
-  };
 
   // ── control bar ──
   const scrub = $('scrub');
@@ -388,13 +402,27 @@ async function start(roomCode) {
   applySubStyle();
 
   // ── diagnostics ──
-  setInterval(() => {
+  setInterval(async () => {
     $('diagRtt').textContent = net.rttMs != null ? `${net.rttMs} ms` : '—';
     $('diagRole').textContent = net.peerId ? (net.isReference ? 'reference' : 'follower') : '—';
+    $('diagPeers').textContent = String(net.peerCount);
     if (net.peerId) {
       const s = sync.stalled;
       $('peerState').textContent = s.them ? `${peerName} is buffering`
         : video.paused ? 'Paused' : 'Playing together';
+    }
+
+    // Report the real RTCPeerConnection state rather than "we saw a peer join
+    // once". A connection that fails during stream renegotiation used to leave
+    // the dot green and the app silently dead.
+    const d = await net.diagnose();
+    $('diagConn').textContent = d.state;
+    $('diagPath').textContent = d.candidate;
+    if (net.peerId && (d.state === 'failed' || d.state === 'disconnected')) {
+      $('connDot').dataset.state = 'lost';
+      $('connText').textContent = d.state === 'failed'
+        ? 'Connection failed — you may need a TURN server (see Settings)'
+        : 'Connection dropped — trying to recover…';
     }
   }, 1000);
 

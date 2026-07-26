@@ -156,7 +156,11 @@ All messages are Trystero actions created with `room.makeAction(name)`.
 | `chat` | broadcast | `{text, mediaTime, sentAt}` | Text message; `mediaTime` timestamps it against the movie |
 | `react` | broadcast | `{emoji}` | Floating emoji reaction |
 | `meta` | broadcast on join | `{name, fingerprint, fileName, duration}` | Identity + file fingerprint for the mismatch check |
+
 | `ping` | request/response | `→ n`, `← n` | RTT probe. Uses `kind: 'request'` |
+
+Every handler receives the **sender's peer id** as a second argument. Use it — do not assume
+`net.peerId` (see the ghost-peer entry under Gotchas).
 
 `sentAt` is `Date.now()` on the sender. It is **not** used as an absolute clock (the two machines'
 clocks are not synchronised) — only the RTT-derived `oneWay` estimate is used for compensation.
@@ -166,6 +170,32 @@ clocks are not synchronised) — only the RTT-derived `oneWay` estimate is used 
 ## Gotchas & learnings
 
 > Append to this as new ones are hit. Each one here cost real debugging time.
+
+**`room.addStream(stream)` only reaches peers who are ALREADY in the room.** *(Found after the
+first real two-machine session — neither person could see the other's camera.)* It is not a
+broadcast that new peers pick up. We called it once, immediately after the camera prompt resolved,
+and at that moment the room was still empty: granting camera access takes a second, Nostr peer
+discovery takes ten. So the call reached nobody, on both sides. Trystero's docs are explicit about
+this — you must also re-send targeted on every join:
+`room.onPeerJoin = id => room.addStream(stream, {target: id})`. Both paths are needed, because the
+peer may arrive either before or after the camera does. **Verified with a canvas-`captureStream`
+harness:** without the targeted re-send, neither peer ever fired `onPeerStream`; with it, both did.
+
+**`onPeerJoin` firing does NOT mean the connection is still alive.** Trystero fires it once, when
+the handshake activates. Adding a camera stream afterwards triggers an ICE renegotiation that can
+fail independently — most likely on a network pair that needs a TURN relay, which we do not have
+configured. The result is a green "Connected" dot over a dead peer connection: no video, no sync,
+no error. The Settings panel now reports the real `RTCPeerConnection.connectionState` and the
+selected ICE candidate pair (`host` = same machine, `srflx`/`prflx` = direct across NAT, `relay` =
+TURN), and the status line flips to a failure message when the state goes `failed`. **Do not trust
+`onPeerJoin` alone as a health signal.**
+
+**Attribute incoming messages to the actual sender, not `net.peerId`.** A room can hold more than
+two peers — a forgotten second tab lingers as a "ghost" until it really closes. Crediting every
+message to `net.peerId` corrupts the sequence-number tiebreak in `sync.js` and lets a ghost's
+heartbeat drive drift correction. `net.js` now passes Trystero's `{peerId}` through to every
+handler, ignores heartbeats from anyone but the nominated peer, and still honours play/pause from
+any peer (a command is a real person pressing a real button).
 
 **An author `display` rule silently defeats the `hidden` attribute.** *(Found after deploying —
 "Join room" appeared to do nothing.)* The UA stylesheet's `[hidden] { display: none }` is an
@@ -257,20 +287,30 @@ rather than the `<video>`, which is the documented fix, but this has not been ob
 `ERR_CERT_AUTHORITY_INVALID` and spams the console. Harmless — Trystero connects through the other
 relays — but it makes the console noisy when debugging.
 
-**Cross-network connection untested.** Both peers have only ever been tabs on one machine, where
-RTT is ~2ms and no TURN relay is needed. Real-world latency and the TURN fallback are unproven.
+**No TURN server is configured, and the first real two-machine session failed.** `TURN` in
+`net.js` is an empty array, so a peer pair that cannot reach each other directly has no fallback.
+In the first Mac↔Windows session both sides showed "Connected" but neither video nor playback sync
+worked. The camera half of that is explained and fixed (the `addStream` gotcha above); the sync
+half is **not yet explained** — two tabs on one machine sync correctly, including play, pause,
+seek and scrub, so the sync engine itself is sound. The leading theory is that the peer connection
+died during stream renegotiation for want of a relay. The new Connection/Path readouts in Settings
+are there to settle it: if `Path` shows `relay` the connection is going through TURN, if it shows
+`srflx`/`prflx` it is direct, and if `Connection` shows `failed` there is no connection at all.
+**Next session, open Settings (⚙) on both machines and read those two rows first.**
 
 ---
 
 ## Next steps
 
-1. **Run it with a real camera** — open two browser windows (one incognito), allow camera access,
-   and check auto-duck, the tiles, and fullscreen. This is the largest untested area.
-2. **Confirm `getUserMedia` works over HTTPS on the deployed site** — it is live, but the camera
-   prompt has not been exercised there yet.
-3. **Test across two networks** with a real second person — this is the only way to exercise the
-   TURN fallback path.
-4. Consider reordering/pinning Nostr relays to drop the one with the bad certificate.
+1. **Add a TURN server.** This is now the top item. `TURN` in `net.js` is empty, and the first
+   two-machine session failed. Metered (metered.ca) gives 50GB/month free with no card and hands
+   back exactly the shape the commented-out block expects.
+2. **Re-test across two machines with Settings open** and record `Connection` and `Path` from both
+   sides. That is what will explain the sync failure.
+3. **Verify the camera fix on two real machines** — both people should now see each other. The fix
+   is proven against a synthetic stream but has not run with a real webcam across the internet.
+4. Consider reordering/pinning Nostr relays to drop the ones with bad certificates
+   (`schnorr.me`, `relay.agorist.space`).
 5. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
    sessions, so the movie doesn't have to be re-picked every time.
 
@@ -279,6 +319,25 @@ RTT is ~2ms and no TURN relay is needed. Real-world latency and the TURN fallbac
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-26 — first real two-machine session: camera fixed, sync still open
+
+- **Fixed: neither person could see the other's camera.** `room.addStream(stream)` only reaches
+  peers already in the room, and we called it right after the camera prompt — seconds before peer
+  discovery finished — so it reached nobody on either side. Now also re-sent targeted from
+  `onPeerJoin`. Proven with a canvas-`captureStream` harness: 0 streams delivered before, 2 after.
+- **Fixed: `net.onMeta` was wired after `await startCall(...)`**, breaking the rule this file
+  already documents. Peer name and the file-mismatch warning were lost whenever the peer connected
+  during the camera prompt. Moved above the await with the other handlers.
+- **Fixed: incoming messages were credited to `net.peerId` rather than the real sender**, which
+  corrupts the sequence tiebreak and lets a ghost tab drive drift correction. Sender id is now
+  passed through; heartbeats from non-nominated peers are ignored.
+- **Added honest connection diagnostics** — `Connection` (real `RTCPeerConnection` state) and
+  `Path` (ICE candidate pair) in Settings, plus a status line that reports `failed`/`disconnected`
+  instead of leaving the dot green over a dead connection.
+- **Still open: playback did not sync between the two machines.** Not reproduced — two tabs on one
+  machine sync correctly (play, pause, seek, scrub all propagate, drift < 0.1s). See
+  **Known issues**.
 
 ### 2026-07-26 — fixed: "Join room" appeared to do nothing
 

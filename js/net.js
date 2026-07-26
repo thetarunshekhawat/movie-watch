@@ -71,7 +71,19 @@ export function connect(roomCode) {
 
   /** Rolling RTT samples, in ms. We use the median to shrug off outliers. */
   const rttSamples = [];
+
+  /**
+   * The peer we are actually watching with.
+   *
+   * A room can contain more than two peers — a laptop with a forgotten second tab
+   * open, or a session someone reloaded out of without the tab closing, lingers as
+   * a "ghost" until its tab really goes away. This app is strictly two-person, so
+   * we nominate the most recently joined peer as the real one and treat anything
+   * else as a ghost. Ghost heartbeats are ignored (drift correction needs exactly
+   * one source of truth) while their play/pause commands are still honoured.
+   */
   let peerId = null;
+  const allPeers = new Set();
   let pingTimer = null;
 
   const net = {
@@ -81,6 +93,9 @@ export function connect(roomCode) {
 
     /** The connected peer's id, or null. */
     get peerId() { return peerId; },
+
+    /** Every peer currently in the room, ghosts included. */
+    get peerCount() { return allPeers.size; },
 
     /**
      * Estimated one-way latency in SECONDS.
@@ -132,7 +147,46 @@ export function connect(roomCode) {
     onPeerLeave:() => {},
     onStream:   () => {},
 
-    addStream: stream => room.addStream(stream),
+    /**
+     * Send our camera/mic to peers.
+     *
+     * `target` matters more than it looks. `room.addStream(stream)` with no target
+     * only reaches peers who are ALREADY in the room, and at the moment we call it
+     * (right after the camera prompt) there is usually nobody there yet — Nostr peer
+     * discovery takes several seconds longer than granting camera access does. The
+     * result was that neither side ever sent its video. Trystero's own docs say to
+     * re-send targeted on every peer join, which is what main.js now does.
+     */
+    addStream: (stream, target) =>
+      room.addStream(stream, target ? { target } : undefined),
+
+    /**
+     * Live connection health, straight from the RTCPeerConnection.
+     *
+     * "Connected" on its own has already lied to us once: the data-channel handshake
+     * succeeds over host/reflexive candidates, then adding a camera stream forces a
+     * renegotiation that can fail on a network needing a TURN relay — leaving a dead
+     * connection behind a green dot. `candidate` tells you which path is really in
+     * use: 'host' = same machine, 'srflx'/'prflx' = direct across NAT, 'relay' = TURN.
+     */
+    async diagnose() {
+      const pc = room.getPeers()[peerId];
+      if (!pc) return { state: 'none', candidate: '—' };
+      const out = { state: pc.connectionState || pc.iceConnectionState, candidate: '—' };
+      try {
+        const stats = await pc.getStats();
+        let pair = null;
+        stats.forEach(r => {
+          if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) pair = r;
+        });
+        if (pair) {
+          const local = stats.get(pair.localCandidateId);
+          const remote = stats.get(pair.remoteCandidateId);
+          out.candidate = `${local?.candidateType ?? '?'}/${remote?.candidateType ?? '?'}`;
+        }
+      } catch { /* getStats is best-effort; never break the UI over diagnostics */ }
+      return out;
+    },
 
     leave() {
       clearInterval(pingTimer);
@@ -140,16 +194,26 @@ export function connect(roomCode) {
     },
   };
 
-  // Trystero delivers `(data, {peerId})`. We drop the metadata for most actions
-  // because this app is strictly two-person — there is only ever one other peer.
-  ctrl.onMessage  = d => net.onCtrl(d);
-  beat.onMessage  = d => net.onBeat(d);
-  stall.onMessage = d => net.onStall(d);
-  chat.onMessage  = d => net.onChat(d);
-  react.onMessage = d => net.onReact(d);
-  meta.onMessage  = d => net.onMeta(d);
+  // Trystero delivers `(data, {peerId})`. Pass the sender id through rather than
+  // assuming it — an earlier version credited every incoming message to `peerId`,
+  // which is wrong the moment a ghost tab is also in the room, and quietly corrupts
+  // the sequence-number tiebreak in sync.js.
+  ctrl.onMessage  = (d, { peerId: from }) => net.onCtrl(d, from);
+  stall.onMessage = (d, { peerId: from }) => net.onStall(d, from);
+  chat.onMessage  = (d, { peerId: from }) => net.onChat(d, from);
+  react.onMessage = (d, { peerId: from }) => net.onReact(d, from);
+  meta.onMessage  = (d, { peerId: from }) => net.onMeta(d, from);
+
+  // Drift correction needs exactly one reference position, so a ghost's heartbeat
+  // must never reach it. Commands (ctrl) are not filtered — a play from any peer is
+  // a real user pressing a real button.
+  beat.onMessage = (d, { peerId: from }) => {
+    if (from !== peerId) return;
+    net.onBeat(d, from);
+  };
 
   room.onPeerJoin = id => {
+    allPeers.add(id);
     peerId = id;
     rttSamples.length = 0;   // latency to a new peer is unrelated to the old one
     net.onPeerJoin(id);
@@ -157,8 +221,10 @@ export function connect(roomCode) {
   };
 
   room.onPeerLeave = id => {
+    allPeers.delete(id);
     if (id === peerId) {
-      peerId = null;
+      // Fall back to another peer if one is still around, rather than going dark.
+      peerId = [...allPeers].pop() ?? null;
       rttSamples.length = 0;
     }
     net.onPeerLeave(id);

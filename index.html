@@ -196,6 +196,13 @@
         <dt>Latency</dt><dd id="diagRtt">—</dd>
         <dt>Drift</dt><dd id="diagDrift">—</dd>
         <dt>Role</dt><dd id="diagRole">—</dd>
+        <!-- Connection + Path exist because the "Connected" dot was once green over
+             a peer connection that had already died. Path shows which ICE route is
+             carrying the call: host = same machine, srflx/prflx = direct across NAT,
+             relay = through a TURN server. -->
+        <dt>Connection</dt><dd id="diagConn">—</dd>
+        <dt>Path</dt><dd id="diagPath">—</dd>
+        <dt>Peers in room</dt><dd id="diagPeers">—</dd>
         <dt>Your file</dt><dd id="diagFile">—</dd>
       </dl>
     </div>

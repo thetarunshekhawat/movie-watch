@@ -164,8 +164,10 @@ export function createSync(video, net, hooks = {}) {
 
   // ─────────────────────────── peer → local ───────────────────────────
 
-  net.onCtrl = msg => {
-    const from = net.peerId || '';
+  net.onCtrl = (msg, fromPeer) => {
+    // Must be the ACTUAL sender, not net.peerId. The tiebreak in accept() compares
+    // peer ids, so crediting a message to the wrong peer can wrongly reject it.
+    const from = fromPeer || net.peerId || '';
     if (!accept(msg, from)) return;
     remember(msg, from);
 
