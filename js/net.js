@@ -44,26 +44,23 @@ const APP_ID = 'movie-watch-p2p-v1';
 const TURN = [];
 
 /**
- * Nostr relays, pinned rather than left to Trystero's defaults.
+ * DO NOT pin a hand-picked relay list here. This was tried and it broke discovery
+ * outright — nobody could connect at all.
  *
- * Two peers only find each other if they share at least one working relay. The
- * default list contains several that fail outright from here — `schnorr.me`,
- * `relay.agorist.space` and `relay.nostr.bg` refuse the connection, and
- * `relay.nostr.band` times out — which both spams the console and, worse, eats
- * into the redundancy budget so the two sides can end up subscribed to disjoint
- * sets of working relays and never see each other.
+ * The trap: "the WebSocket opens" is NOT the same as "this relay works". Trystero
+ * signals over Nostr *ephemeral* events, and plenty of relays accept a connection
+ * while silently declining to forward those — caching and aggregator services in
+ * particular. Four of the six relays pinned in that attempt (primal, snort,
+ * nostr.mom, offchain.pub) are absent from Trystero's own 47-relay default list
+ * for exactly that reason, and with `redundancy: 4` a peer could draw four duds
+ * and never be reachable.
  *
- * Every URL below was verified to accept a WebSocket connection. `redundancy`
- * is raised to 4 so a peer pair has to be very unlucky to share none.
+ * Trystero's defaults are curated against real Trystero traffic. The cert errors
+ * a few of them throw (`schnorr.me`, `relay.agorist.space`) are console noise, not
+ * a functional problem — the redundancy is there to absorb exactly that. Leave
+ * relay selection alone unless you can test end-to-end peer discovery, from two
+ * networks, against any replacement list.
  */
-const RELAYS = [
-  'wss://relay.damus.io',
-  'wss://nos.lol',
-  'wss://relay.primal.net',
-  'wss://relay.snort.social',
-  'wss://nostr.mom',
-  'wss://offchain.pub',
-];
 
 const PING_INTERVAL_MS = 10_000;
 const RTT_SAMPLES = 7;
@@ -73,10 +70,7 @@ export { selfId };
 export function connect(roomCode) {
   // Only pass turnConfig when we actually have relays, so the default-STUN-only
   // path stays exactly the documented default rather than "default plus empty list".
-  const config = {
-    appId: APP_ID,
-    relayConfig: { urls: RELAYS, redundancy: 4 },
-  };
+  const config = { appId: APP_ID };
   if (TURN.length) config.turnConfig = TURN;
 
   const room = joinRoom(config, roomCode);
