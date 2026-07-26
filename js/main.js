@@ -29,6 +29,7 @@ const lobby = {
   videoStatus: $('videoStatus'),
   sub: $('subFile'),
   subStatus: $('subStatus'),
+  camera: $('useCamera'),
   join: $('joinBtn'),
   error: $('lobbyError'),
 };
@@ -41,6 +42,7 @@ let subFile = null;
 const params = new URLSearchParams(location.search);
 lobby.room.value = params.get('room') || localStorage.getItem('mw:room') || randomRoom();
 lobby.name.value = localStorage.getItem('mw:name') || '';
+lobby.camera.checked = localStorage.getItem('mw:camera') === 'on';
 updateShareHint();
 
 lobby.room.addEventListener('input', updateShareHint);
@@ -126,6 +128,7 @@ lobby.join.addEventListener('click', () => {
 
   localStorage.setItem('mw:room', room);
   localStorage.setItem('mw:name', lobby.name.value.trim());
+  localStorage.setItem('mw:camera', lobby.camera.checked ? 'on' : 'off');
 
   history.replaceState(null, '', `?room=${encodeURIComponent(room)}`);
   start(room).catch(err => showLobbyError(err.message || String(err)));
@@ -204,9 +207,18 @@ async function start(roomCode) {
   net.onChat = ({ text, mediaTime }) => chat.receive({ text, mediaTime });
   net.onReact = ({ emoji }) => chat.receiveReaction(emoji);
 
+  // With cameras off there is no tile to prove someone is there, so the status
+  // line has to carry presence on its own.
+  const showPresence = () => {
+    $('connDot').dataset.state = 'connected';
+    $('connText').textContent = net.peerId
+      ? `Connected — watching with ${peerName}`
+      : 'Waiting for them to join…';
+  };
+
   net.onPeerJoin = id => {
     $('connDot').dataset.state = 'connected';
-    $('connText').textContent = 'Connected';
+    showPresence();
     $('diagRole').textContent = net.isReference ? 'reference' : 'follower';
     net.sendMeta({
       name: myName,
@@ -247,6 +259,8 @@ async function start(roomCode) {
     peerName = name || 'Them';
     chat.peerName = peerName;
     $('peerLabel').textContent = peerName;
+    showPresence();
+    chat.system(`${peerName} joined.`);
 
     if (theirFp && movieFp && theirFp !== movieFp) {
       banner(banners, {
@@ -259,19 +273,26 @@ async function start(roomCode) {
   };
 
   // ── call (async — everything above must already be wired) ──
+  const wantCamera = lobby.camera.checked;
+
   ({ call, duck } = await startCall({
     selfVideo: $('selfVideo'),
     peerVideo: $('peerVideo'),
     selfTile: $('selfTile'),
     peerTile: $('peerTile'),
+    enabled: wantCamera,
   }));
 
-  if (call.error) {
+  if (call.off) {
+    // Deliberate, so no warning — just hide the controls that would do nothing.
+    document.querySelectorAll('[data-needs-camera]').forEach(el => (el.hidden = true));
+  } else if (call.error) {
     banner(banners, {
       id: 'cam', kind: 'warn', sticky: true,
       title: 'Camera and mic unavailable',
-      body: 'Sync still works, but you won\'t see or hear each other. Check the browser permission prompt.',
+      body: 'Sync and chat still work, but you won\'t see or hear each other. Check the browser permission prompt.',
     });
+    document.querySelectorAll('[data-needs-camera]').forEach(el => (el.hidden = true));
   } else {
     // Covers the other ordering: a peer who was already here when the camera came
     // up. The targeted re-send in onPeerJoin covers peers who arrive after.
@@ -421,8 +442,10 @@ async function start(roomCode) {
     if (net.peerId && (d.state === 'failed' || d.state === 'disconnected')) {
       $('connDot').dataset.state = 'lost';
       $('connText').textContent = d.state === 'failed'
-        ? 'Connection failed — you may need a TURN server (see Settings)'
+        ? 'Connection failed — no direct route between your two networks'
         : 'Connection dropped — trying to recover…';
+    } else if (net.peerId && d.state === 'connected') {
+      showPresence();   // recovered, or never broke
     }
   }, 1000);
 

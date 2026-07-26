@@ -63,6 +63,9 @@ input  { font: inherit; }
   box-shadow: var(--shadow);
 }
 
+.check { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.check input { margin-top: 3px; flex: none; accent-color: var(--accent); }
+
 .lobby-card h1 { margin: 0 0 4px; font-size: 28px; letter-spacing: -.02em; }
 .tagline { margin: 0 0 28px; color: var(--text-dim); }
 

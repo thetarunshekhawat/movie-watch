@@ -22,20 +22,29 @@ const DUCK_TO = 0.3;
 /** How long they must be quiet before the movie comes back up. */
 const RELEASE_MS = 500;
 
-export async function startCall({ selfVideo, peerVideo, selfTile, peerTile }) {
+/**
+ * `enabled: false` means the user deliberately chose to watch without cameras.
+ * That is not an error state — we skip getUserMedia entirely, so there is no
+ * permission prompt, no media track, and crucially no ICE renegotiation to send
+ * one. Chat, reactions and playback sync then ride a data-only peer connection,
+ * which is far more likely to survive between two networks with no TURN relay.
+ */
+export async function startCall({ selfVideo, peerVideo, selfTile, peerTile, enabled = true }) {
   let stream = null;
   let error = null;
 
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-    selfVideo.srcObject = stream;
-    selfTile.hidden = false;
-  } catch (err) {
-    // Denied or no device. The movie half of the app still works fine.
-    error = err;
+  if (enabled) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      selfVideo.srcObject = stream;
+      selfTile.hidden = false;
+    } catch (err) {
+      // Denied or no device. The movie half of the app still works fine.
+      error = err;
+    }
   }
 
   restoreTilePositions(selfTile, peerTile);
@@ -47,6 +56,8 @@ export async function startCall({ selfVideo, peerVideo, selfTile, peerTile }) {
   const call = {
     stream,
     error,
+    /** True when the user chose to watch without cameras — distinct from `error`. */
+    off: !enabled,
     micOn: true,
     camOn: true,
 

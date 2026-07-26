@@ -38,7 +38,7 @@ Not yet tested between two real machines across the internet.
 | Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified |
 | Player + file handling | `js/player.js` | ✅ Done — codec + audio preflight, fingerprint |
 | Subtitles | `js/subs.js` | ✅ Done — SRT→VTT verified |
-| Video call + auto-duck | `js/call.js` | ⚠️ Written, **camera path untested** (headless has no camera) |
+| Video call + auto-duck | `js/call.js` | ⚠️ Opt-in, off by default. Needs TURN to work across networks |
 | Chat + reactions | `js/chat.js` | ✅ Done — verified peer-to-peer |
 | Layout / controls | `js/ui.js` | ✅ Done |
 | README | `README.md` | ✅ Done |
@@ -123,6 +123,13 @@ add). **After the handshake, the relays are irrelevant — the session survives 
 Rather than handle that in the app, the file is remuxed once with ffmpeg and the resulting MP4 is
 the copy that gets shared. Both sides then have byte-identical files. The app still runs a codec
 preflight so a wrong file produces a useful error instead of a black screen.
+
+**Cameras are opt-in, off by default.** Sending a webcam stream forces an ICE renegotiation, and
+with no TURN relay that can kill a peer connection which was working perfectly for data — taking
+chat, reactions, presence and playback sync down with it. Those four are the point of the app; the
+webcam is a nice-to-have that WhatsApp can cover. So the lobby ships with the camera unticked, and
+an unticked box means `getUserMedia` is never called at all: no prompt, no media track, no
+renegotiation. Tick it only when both people are on the same network, or once TURN is configured.
 
 **Only one peer corrects drift.** If both peers correct toward each other they oscillate forever.
 The rule is deterministic and needs no negotiation: the peer with the lexicographically smaller
@@ -287,28 +294,36 @@ rather than the `<video>`, which is the documented fix, but this has not been ob
 `ERR_CERT_AUTHORITY_INVALID` and spams the console. Harmless — Trystero connects through the other
 relays — but it makes the console noisy when debugging.
 
-**No TURN server is configured, and the first real two-machine session failed.** `TURN` in
-`net.js` is an empty array, so a peer pair that cannot reach each other directly has no fallback.
-In the first Mac↔Windows session both sides showed "Connected" but neither video nor playback sync
-worked. The camera half of that is explained and fixed (the `addStream` gotcha above); the sync
-half is **not yet explained** — two tabs on one machine sync correctly, including play, pause,
-seek and scrub, so the sync engine itself is sound. The leading theory is that the peer connection
-died during stream renegotiation for want of a relay. The new Connection/Path readouts in Settings
-are there to settle it: if `Path` shows `relay` the connection is going through TURN, if it shows
-`srflx`/`prflx` it is direct, and if `Connection` shows `failed` there is no connection at all.
-**Next session, open Settings (⚙) on both machines and read those two rows first.**
+**Webcams do not work between two networks, because there is no TURN server.** `TURN` in `net.js`
+is an empty array, so a peer pair that cannot reach each other directly has no fallback. In the
+first Mac↔Windows session (different networks) both sides showed "Connected" but neither the video
+nor playback sync worked.
+
+Two separate causes, one fixed and one worked around:
+
+- The `addStream` bug above meant neither camera was ever sent, on any network. Fixed.
+- Sync dying at the same time is **not fully explained**. Two tabs on one machine sync correctly —
+  play, pause, seek, scrub, chat, reactions — so the engine is sound. The leading theory is that
+  adding a camera stream renegotiated ICE, failed for want of a relay, and took the whole peer
+  connection down with it. Cameras are now opt-in and off by default, which sidesteps it; if the
+  next two-machine test syncs cleanly with cameras off, the theory is confirmed.
+
+The Connection/Path readouts in Settings exist to settle this: `Path` shows `relay` when going
+through TURN, `srflx`/`prflx` when direct, `host` when same-machine; `Connection` shows the real
+`RTCPeerConnection` state. **Open Settings (⚙) on both machines and read those two rows first.**
 
 ---
 
 ## Next steps
 
-1. **Add a TURN server.** This is now the top item. `TURN` in `net.js` is empty, and the first
-   two-machine session failed. Metered (metered.ca) gives 50GB/month free with no card and hands
-   back exactly the shape the commented-out block expects.
-2. **Re-test across two machines with Settings open** and record `Connection` and `Path` from both
-   sides. That is what will explain the sync failure.
-3. **Verify the camera fix on two real machines** — both people should now see each other. The fix
-   is proven against a synthetic stream but has not run with a real webcam across the internet.
+1. **Re-test across the two machines with cameras OFF.** This is the immediate next step. Sync,
+   chat, reactions and presence should all work; if they do, the camera renegotiation theory is
+   confirmed. Open Settings (⚙) on both sides and record `Connection` and `Path` either way.
+2. **Add a TURN server** — only needed to get the webcams back. `TURN` in `net.js` is empty.
+   Metered (metered.ca) gives 50GB/month free with no card and hands back exactly the shape the
+   commented-out block expects.
+3. **Verify the camera fix on two real machines** once TURN is in. The `addStream` fix is proven
+   against a synthetic stream but has not run with a real webcam across the internet.
 4. Consider reordering/pinning Nostr relays to drop the ones with bad certificates
    (`schnorr.me`, `relay.agorist.space`).
 5. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
@@ -319,6 +334,20 @@ are there to settle it: if `Path` shows `relay` the connection is going through 
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-26 — cameras made opt-in so sync and chat survive without TURN
+
+- The first two-machine session (different networks) had both sides showing "Connected" with no
+  video and no sync. `onPeerJoin` only fires after a successful data-channel handshake, so the
+  connection provably worked at that moment — the most likely killer is the ICE renegotiation
+  triggered by adding a camera stream, which has no TURN relay to fall back on.
+- **Cameras are now opt-in and off by default** (`#useCamera` in the lobby). Unticked means
+  `getUserMedia` is never called: no prompt, no track, no renegotiation. Camera-only controls
+  (mic, cam, auto-duck, voice volume) hide themselves rather than sitting there doing nothing.
+- **Presence no longer depends on the video tile.** The status line reads
+  "Connected — watching with <name>", and the peer's arrival is announced in chat.
+- Verified with two peers, cameras off: play/pause/seek sync both directions (drift < 0.1s),
+  chat delivered with the right name and movie timestamp, emoji reaction rendered on the peer.
 
 ### 2026-07-26 — first real two-machine session: camera fixed, sync still open
 

@@ -41,6 +41,19 @@
       <p class="file-status" id="subStatus"></p>
     </div>
 
+    <!-- Off by default on purpose. Sending a camera stream forces an ICE
+         renegotiation, and without a TURN relay that can kill an otherwise healthy
+         peer connection — taking chat, reactions and playback sync down with it.
+         Leaving this unticked keeps the connection data-only and robust. -->
+    <div class="field">
+      <label class="check">
+        <input type="checkbox" id="useCamera">
+        <span>Turn on camera and mic
+          <span class="hint">— off by default; sync and chat are more reliable without it</span>
+        </span>
+      </label>
+    </div>
+
     <details class="checklist">
       <summary>Before you start — read this</summary>
       <ul>
@@ -114,17 +127,19 @@
         <span class="ctl-tag">just you</span>
       </div>
 
-      <div class="ctl-group" title="Their voice volume — only affects you">
+      <!-- data-needs-camera: hidden when watching without cameras, since these
+           controls would have nothing to act on. -->
+      <div class="ctl-group" data-needs-camera title="Their voice volume — only affects you">
         <span class="ctl-icon">🗣</span>
         <input type="range" id="voiceVolume" class="slider" min="0" max="1" step="0.01" value="1">
         <span class="ctl-tag">just you</span>
       </div>
 
-      <span class="divider"></span>
+      <span class="divider" data-needs-camera></span>
 
-      <button id="micBtn" class="ctl" title="Mute / unmute your mic (M)">🎙</button>
-      <button id="camBtn" class="ctl" title="Camera on / off">📷</button>
-      <button id="duckBtn" class="ctl active" title="Auto-lower movie volume when they speak">🔉</button>
+      <button id="micBtn" class="ctl" data-needs-camera title="Mute / unmute your mic (M)">🎙</button>
+      <button id="camBtn" class="ctl" data-needs-camera title="Camera on / off">📷</button>
+      <button id="duckBtn" class="ctl active" data-needs-camera title="Auto-lower movie volume when they speak">🔉</button>
 
       <span class="divider"></span>
 

@@ -1,15 +1,20 @@
 # 🍿 Movie Watch
 
-Watch a movie with someone else, from anywhere, with your faces on screen.
+Watch a movie with someone else, from anywhere, in perfect sync.
 
 You both play **your own copy** of the film from your own hard drive. Nothing is uploaded or
-streamed — only tiny "play"/"pause"/"seek" messages and your webcams travel between you. So the
-video is always full quality, and it works even on slow internet.
+streamed — only tiny "play"/"pause"/"seek" messages travel between you. So the video is always
+full quality, and it works even on slow internet.
 
 - Pause on one side, it pauses on the other
-- See and hear each other over the movie
+- Chat and emoji reactions over the movie, without pausing it
 - **Volume and subtitles are yours alone** — set them however you like
-- The movie automatically ducks when the other person talks (you can turn this off)
+- Optional webcams, with the movie ducking when the other person talks
+
+> **Cameras are off by default, and that's deliberate.** Sending video renegotiates the
+> connection, and without a TURN relay that can break an otherwise healthy link — taking sync and
+> chat down with it. Tick **Turn on camera and mic** in the lobby only if you're both on the same
+> wifi. Otherwise leave it off and put a normal video call on your phone alongside.
 - Text chat with bubbles that float over the film, and emoji reactions
 
 There is **no server**. Just a web page.
@@ -74,9 +79,10 @@ Send that link to the other person once. It never expires, so they can bookmark 
 4. Hit **Join room**
 5. Either of you presses play
 
-**Wear headphones.** This is not optional. Without them, the movie's audio comes out of your
-speakers, goes into your microphone, and echoes back to the other person. Browser echo-cancellation
-is built for voices, not loud continuous film audio, and it will not save you.
+**If you turn cameras on, wear headphones.** This is not optional. Without them, the movie's audio
+comes out of your speakers, goes into your microphone, and echoes back to the other person. Browser
+echo-cancellation is built for voices, not loud continuous film audio, and it will not save you.
+(With cameras off — the default — there's no microphone, so this doesn't apply.)
 
 ### Controls
 
@@ -122,9 +128,16 @@ to 10%. If it's badly out, hit **Force resync now** in Settings.
 **She can hear the movie twice / there's an echo.**
 Headphones. See above.
 
-**No camera.**
-Check the browser's permission prompt. If you deny it, everything else still works — you just won't
-see each other.
+**You can't see each other.**
+Cameras are off by default. Tick **Turn on camera and mic** in the lobby — on both sides. If it's
+ticked and you still can't see each other, you're almost certainly on different networks: there's
+no TURN relay configured, so there's no route for the video. Open Settings (⚙) and read **Path** —
+`host` means same machine, `srflx`/`prflx` means direct, `relay` means TURN. Leave cameras off and
+use a phone call instead; sync and chat don't need any of this.
+
+**"Connected" but nothing syncs.**
+Open Settings (⚙) and read **Connection**. If it says `failed` or `disconnected`, the peer link is
+dead regardless of what the dot says — reload both sides with cameras off.
 
 ---
 
