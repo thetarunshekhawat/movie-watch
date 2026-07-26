@@ -1,0 +1,13 @@
+# Browser-automation tool output
+.gstack/
+
+# Movie and subtitle files — never commit these
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.srt
+*.vtt
+
+.DS_Store

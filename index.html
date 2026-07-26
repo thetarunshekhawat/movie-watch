@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Movie Watch</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍿</text></svg>">
+</head>
+<body>
+
+<!-- ══════════════════════════ LOBBY ══════════════════════════ -->
+<section id="lobby" class="lobby">
+  <div class="lobby-card">
+    <h1>🍿 Movie Watch</h1>
+    <p class="tagline">Same movie, same moment, from anywhere.</p>
+
+    <div class="field">
+      <label for="displayName">Your name</label>
+      <input type="text" id="displayName" placeholder="Tarun" maxlength="24" autocomplete="off">
+    </div>
+
+    <div class="field">
+      <label for="roomCode">Room code <span class="hint">— you both need the same one</span></label>
+      <div class="row">
+        <input type="text" id="roomCode" placeholder="movie-night" autocomplete="off">
+        <button id="copyLink" class="btn-secondary" type="button" title="Copy the share link">Copy link</button>
+      </div>
+      <p class="hint" id="shareHint"></p>
+    </div>
+
+    <div class="field">
+      <label for="videoFile">Movie file <span class="hint">— stays on your computer, never uploaded</span></label>
+      <input type="file" id="videoFile" accept="video/*,.mp4,.webm,.mkv,.avi,.mov">
+      <p class="file-status" id="videoStatus"></p>
+    </div>
+
+    <div class="field">
+      <label for="subFile">Subtitles <span class="hint">— optional, .srt or .vtt, only yours</span></label>
+      <input type="file" id="subFile" accept=".srt,.vtt,text/vtt">
+      <p class="file-status" id="subStatus"></p>
+    </div>
+
+    <details class="checklist">
+      <summary>Before you start — read this</summary>
+      <ul>
+        <li><strong>Wear headphones.</strong> Otherwise the movie's audio goes into your mic and
+            echoes back to the other person. This can't be fixed in software.</li>
+        <li><strong>You both need the same file.</strong> Ideally the exact same download — the app
+            warns you if they differ.</li>
+        <li><strong>If the movie won't load</strong>, it's a codec problem. The error message will
+            give you the exact <code>ffmpeg</code> command to fix it.</li>
+        <li><strong>Use Chrome or Edge.</strong> Firefox and Safari support fewer video formats.</li>
+      </ul>
+    </details>
+
+    <button id="joinBtn" class="btn-primary" type="button" disabled>Join room</button>
+    <p class="lobby-error" id="lobbyError" hidden></p>
+  </div>
+</section>
+
+<!-- ══════════════════════════ PLAYER ══════════════════════════ -->
+<!-- NOTE: #stage is the fullscreen target, NOT the <video>.
+     Fullscreen only renders the fullscreened element and its descendants,
+     so the webcam tiles / chat / controls must live inside it. -->
+<section id="stage" class="stage" hidden>
+
+  <video id="movie" class="movie" playsinline></video>
+
+  <!-- Banners -->
+  <div class="banners" id="banners"></div>
+
+  <!-- Webcam tiles -->
+  <div class="tile" id="peerTile" data-tile="peer" hidden>
+    <video id="peerVideo" autoplay playsinline></video>
+    <span class="tile-label" id="peerLabel">Them</span>
+    <span class="tile-muted" id="peerMutedIcon" hidden>🔇</span>
+    <div class="tile-resize" data-resize="peer"></div>
+  </div>
+
+  <div class="tile" id="selfTile" data-tile="self" hidden>
+    <video id="selfVideo" autoplay playsinline muted></video>
+    <span class="tile-label">You</span>
+    <div class="tile-resize" data-resize="self"></div>
+  </div>
+
+  <!-- Floating chat bubbles + reactions -->
+  <div class="bubbles" id="bubbles"></div>
+  <div class="reactions" id="reactions"></div>
+
+  <!-- Centre status (buffering / waiting for peer) -->
+  <div class="center-status" id="centerStatus" hidden></div>
+
+  <!-- ─────────── Control bar ─────────── -->
+  <div class="controls" id="controls">
+
+    <div class="scrub-row">
+      <span class="time" id="timeNow">0:00</span>
+      <input type="range" id="scrub" class="scrub" min="0" max="1000" value="0" step="1">
+      <span class="time" id="timeTotal">0:00</span>
+    </div>
+
+    <div class="btn-row">
+      <button id="playBtn" class="ctl synced" title="Play / pause — synced (Space)">▶</button>
+      <button id="back10" class="ctl synced" title="Back 10s — synced (←)">⏪</button>
+      <button id="fwd10" class="ctl synced" title="Forward 10s — synced (→)">⏩</button>
+
+      <span class="divider"></span>
+
+      <!-- Local-only group -->
+      <div class="ctl-group" title="Movie volume — only affects you">
+        <span class="ctl-icon">🔊</span>
+        <input type="range" id="volume" class="slider" min="0" max="1" step="0.01" value="1">
+        <span class="ctl-tag">just you</span>
+      </div>
+
+      <div class="ctl-group" title="Their voice volume — only affects you">
+        <span class="ctl-icon">🗣</span>
+        <input type="range" id="voiceVolume" class="slider" min="0" max="1" step="0.01" value="1">
+        <span class="ctl-tag">just you</span>
+      </div>
+
+      <span class="divider"></span>
+
+      <button id="micBtn" class="ctl" title="Mute / unmute your mic (M)">🎙</button>
+      <button id="camBtn" class="ctl" title="Camera on / off">📷</button>
+      <button id="duckBtn" class="ctl active" title="Auto-lower movie volume when they speak">🔉</button>
+
+      <span class="divider"></span>
+
+      <button id="subsBtn" class="ctl" title="Subtitles — only yours (C)">💬</button>
+      <button id="settingsBtn" class="ctl" title="Subtitles &amp; sync settings">⚙</button>
+      <button id="chatBtn" class="ctl" title="Chat">
+        💬<span class="badge" id="chatBadge" hidden>0</span>
+      </button>
+      <button id="reactBtn" class="ctl" title="Send a reaction">😀</button>
+      <button id="fsBtn" class="ctl" title="Fullscreen (F)">⛶</button>
+    </div>
+
+    <div class="status-row">
+      <span class="dot" id="connDot" data-state="connecting"></span>
+      <span id="connText">Connecting…</span>
+      <span class="peer-state" id="peerState"></span>
+    </div>
+  </div>
+
+  <!-- ─────────── Emoji picker ─────────── -->
+  <div class="emoji-picker" id="emojiPicker" hidden></div>
+
+  <!-- ─────────── Settings panel ─────────── -->
+  <div class="panel settings-panel" id="settingsPanel" hidden>
+    <div class="panel-head">
+      <h3>Settings</h3>
+      <button class="panel-close" data-close="settingsPanel">✕</button>
+    </div>
+
+    <div class="panel-body">
+      <h4>Sync offset <span class="hint">only you</span></h4>
+      <p class="hint">
+        If your copy of the movie runs ahead of or behind theirs, nudge it here.
+        Saved for this room.
+      </p>
+      <div class="offset-row">
+        <button class="btn-tiny" data-offset="-5">−5s</button>
+        <button class="btn-tiny" data-offset="-0.5">−0.5s</button>
+        <span class="offset-val" id="offsetVal">0.0s</span>
+        <button class="btn-tiny" data-offset="0.5">+0.5s</button>
+        <button class="btn-tiny" data-offset="5">+5s</button>
+      </div>
+      <button class="btn-secondary full" id="resyncBtn" type="button">Force resync now</button>
+
+      <hr>
+
+      <h4>Subtitles <span class="hint">only you</span></h4>
+      <label class="field-inline">
+        <span>Load a file</span>
+        <input type="file" id="subFileLive" accept=".srt,.vtt,text/vtt">
+      </label>
+      <label class="field-inline">
+        <span>Size</span>
+        <input type="range" id="subSize" min="1" max="4" step="0.1" value="2">
+      </label>
+      <label class="field-inline">
+        <span>Background</span>
+        <input type="range" id="subBg" min="0" max="1" step="0.05" value="0.75">
+      </label>
+      <label class="field-inline">
+        <span>Height</span>
+        <input type="range" id="subPos" min="0" max="40" step="1" value="8">
+      </label>
+
+      <hr>
+
+      <h4>Diagnostics</h4>
+      <dl class="diag">
+        <dt>Latency</dt><dd id="diagRtt">—</dd>
+        <dt>Drift</dt><dd id="diagDrift">—</dd>
+        <dt>Role</dt><dd id="diagRole">—</dd>
+        <dt>Your file</dt><dd id="diagFile">—</dd>
+      </dl>
+    </div>
+  </div>
+
+  <!-- ─────────── Chat panel ─────────── -->
+  <div class="panel chat-panel" id="chatPanel" hidden>
+    <div class="panel-head">
+      <h3>Chat</h3>
+      <button class="panel-close" data-close="chatPanel">✕</button>
+    </div>
+    <div class="chat-log" id="chatLog"></div>
+    <form class="chat-form" id="chatForm" autocomplete="off">
+      <input type="text" id="chatInput" placeholder="Say something…" maxlength="500">
+      <button type="submit" class="btn-primary small">Send</button>
+    </form>
+  </div>
+
+</section>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
