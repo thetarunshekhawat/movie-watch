@@ -13,10 +13,15 @@ full quality, and it works even on slow internet.
 - **Volume and subtitles are yours alone** — set them however you like
 - Optional webcams, with the movie ducking when the other person talks
 
-> **Cameras are off by default, and that's deliberate.** Sending video renegotiates the
+> **Camera and mic are off by default, and that's deliberate.** Sending media renegotiates the
 > connection, and without a TURN relay that can break an otherwise healthy link — taking sync and
-> chat down with it. Tick **Turn on camera and mic** in the lobby only if you're both on the same
-> wifi. Otherwise leave it off and put a normal video call on your phone alongside.
+> chat down with it. Tick **Turn on camera** in the lobby only if you're both on the same wifi.
+> Otherwise leave it off and put a normal video call on your phone alongside.
+>
+> **Leave the mic off unless you really want it.** It's a separate box because it costs far more
+> than the camera does: while a microphone is live, Bluetooth headphones drop to the mono call
+> profile and Windows quietens everything else, so the movie itself starts sounding like a phone
+> call. Camera-only doesn't do that. Talk on WhatsApp and keep the film sounding like a film.
 
 There is **no server**. Just a web page.
 
@@ -83,10 +88,10 @@ Send that link to the other person once. It never expires, so they can bookmark 
 
 After that anyone can pause, seek or skip, and it applies to the whole room.
 
-**If you turn cameras on, wear headphones.** This is not optional. Without them, the movie's audio
+**If you turn the mic on, wear headphones.** This is not optional. Without them, the movie's audio
 comes out of your speakers, goes into your microphone, and echoes back to the other person. Browser
 echo-cancellation is built for voices, not loud continuous film audio, and it will not save you.
-(With cameras off — the default — there's no microphone, so this doesn't apply.)
+(With the mic off — the default — this doesn't apply. The camera alone has no microphone.)
 
 ### Controls
 
@@ -137,12 +142,22 @@ to 10%. If it's badly out, hit **Force resync now** in Settings.
 **She can hear the movie twice / there's an echo.**
 Headphones. See above.
 
-**You can't see each other.**
-Cameras are off by default. Tick **Turn on camera and mic** in the lobby — on both sides. If it's
-ticked and you still can't see each other, you're almost certainly on different networks: there's
-no TURN relay configured, so there's no route for the video. Open Settings (⚙) and read **Path** —
-`host` means same machine, `srflx`/`prflx` means direct, `relay` means TURN. Leave cameras off and
-use a phone call instead; sync and chat don't need any of this.
+**You can't see each other — or only one of you can.**
+**Open the roster (👥) first.** If the person you can't see is tagged **NO CAMERA**, that's the
+whole answer: they never ticked the box, so there is no video to show and nothing is broken. This
+is by far the most common cause, and it looks exactly like a fault because one side can still be
+sending perfectly well.
+
+If both sides are ticked and it still doesn't work, you're probably on different networks: there's
+no TURN relay configured, so there may be no route for the video. Open Settings (⚙) and read
+**Path** — `host` means same machine, `srflx`/`prflx` means direct, `relay` means TURN. Leave
+cameras off and use a phone call instead; sync and chat don't need any of this.
+
+**The movie sounds like a video call.**
+Your mic is on. While a microphone is live the operating system treats the machine as being in a
+call: Bluetooth headphones switch to the mono headset profile and Windows ducks other sound by
+80%. Rejoin with **Turn on microphone** unticked — the camera on its own doesn't do this — and use
+WhatsApp for voice. Muting with `M` isn't enough; the mic has to be off from the start.
 
 **"Connected" but nothing syncs — check this first.**
 Open Settings (⚙) and read **Path** and **Watching with**.

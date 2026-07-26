@@ -30,6 +30,8 @@ const lobby = {
   sub: $('subFile'),
   subStatus: $('subStatus'),
   camera: $('useCamera'),
+  mic: $('useMic'),
+  mediaHint: $('mediaHint'),
   join: $('joinBtn'),
   error: $('lobbyError'),
 };
@@ -43,9 +45,41 @@ const params = new URLSearchParams(location.search);
 lobby.room.value = params.get('room') || localStorage.getItem('mw:room') || randomRoom();
 lobby.name.value = localStorage.getItem('mw:name') || '';
 lobby.camera.checked = localStorage.getItem('mw:camera') === 'on';
+// Mic defaults OFF even for someone who previously used "camera and mic" together,
+// because that single old setting cannot tell us they wanted the microphone
+// specifically — and the microphone is the expensive one for movie audio.
+lobby.mic.checked = localStorage.getItem('mw:mic') === 'on';
 updateShareHint();
+updateMediaHint();
 
 lobby.room.addEventListener('input', updateShareHint);
+lobby.camera.addEventListener('change', updateMediaHint);
+lobby.mic.addEventListener('change', updateMediaHint);
+
+/**
+ * Say out loud what the two checkboxes mean, before they cost anyone an evening.
+ *
+ * The camera box being off is invisible to everybody else in the room — they just
+ * see no video from you and cannot tell whether that is a choice or a fault. The
+ * mic box being on is invisible to you until the movie starts sounding like a
+ * phone call. Both deserve a sentence here.
+ */
+function updateMediaHint() {
+  const cam = lobby.camera.checked;
+  const mic = lobby.mic.checked;
+  if (mic) {
+    lobby.mediaHint.textContent =
+      '⚠ With the mic on, your headphones switch to call mode and the movie will sound '
+      + 'thin and mono. Turn the mic off and use WhatsApp for voice if that bothers you.';
+  } else if (cam) {
+    lobby.mediaHint.textContent =
+      'Camera only — you will see each other, and the movie keeps full audio quality.';
+  } else {
+    lobby.mediaHint.textContent =
+      'No camera and no mic. The others will be shown that you are watching without one, '
+      + 'so nobody wastes time thinking your video is broken.';
+  }
+}
 
 function updateShareHint() {
   const code = lobby.room.value.trim();
@@ -129,6 +163,7 @@ lobby.join.addEventListener('click', () => {
   localStorage.setItem('mw:room', room);
   localStorage.setItem('mw:name', lobby.name.value.trim());
   localStorage.setItem('mw:camera', lobby.camera.checked ? 'on' : 'off');
+  localStorage.setItem('mw:mic', lobby.mic.checked ? 'on' : 'off');
 
   history.replaceState(null, '', `?room=${encodeURIComponent(room)}`);
   start(room).catch(err => showLobbyError(err.message || String(err)));
@@ -203,6 +238,33 @@ async function start(roomCode) {
   let duck = null;
   const pendingStreams = [];
 
+  /**
+   * What media we intend to send, readable synchronously — before getUserMedia has
+   * been asked, let alone answered.
+   *
+   * This has to exist this early because `meta` is sent from `onPeerJoin`, which
+   * routinely fires while the camera prompt is still open. Reporting "no camera"
+   * to a newcomer and never correcting it would be worse than saying nothing, so
+   * the intent goes out first and `publishMedia()` re-broadcasts the truth once the
+   * devices have actually resolved.
+   */
+  const wantCamera = lobby.camera.checked;
+  const wantMic = lobby.mic.checked;
+  let myMedia = { camera: wantCamera, mic: wantMic };
+
+  /**
+   * Tell the room what we ended up with, once it is actually known.
+   *
+   * Sent unconditionally rather than only on change: a peer who joined during the
+   * prompt has our optimistic intent and needs the correction, and a `meta` costs
+   * a few dozen bytes.
+   */
+  const publishMedia = () => {
+    myMedia = { camera: !!call?.hasVideo, mic: !!call?.hasAudio };
+    net.setSelf({ camera: myMedia.camera, mic: myMedia.mic });   // also redraws the roster
+    net.sendMeta(myMeta());
+  };
+
   const listNames = names =>
     names.length <= 1 ? (names[0] ?? '')
       : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
@@ -235,6 +297,16 @@ async function start(roomCode) {
 
       if (p.isHost) li.append(tag('host', 'HOST'));
       if (p.isSelf) li.append(tag('you', 'YOU'));
+      // The answer to "why can't I see them?". Nine times out of ten it is not a
+      // broken connection, it is that they never ticked the box — and until this
+      // tag existed there was nothing anywhere in the UI that said so.
+      if (p.known && p.camera === false) {
+        const t = tag('nocam', 'NO CAMERA');
+        t.title = p.isSelf
+          ? 'You joined without a camera, so nobody can see you.'
+          : `${p.name} joined without a camera, so there is no video to show.`;
+        li.append(t);
+      }
       // Flag anyone whose file differs from ours, so a sync problem has an
       // obvious explanation instead of looking like a bug.
       if (!p.isSelf && p.fingerprint && movieFp && p.fingerprint !== movieFp) {
@@ -281,7 +353,10 @@ async function start(roomCode) {
       : 'Waiting for someone to join…';
   }
 
-  net.setSelf({ name: myName, fingerprint: movieFp, fileName: movieFile.name });
+  net.setSelf({
+    name: myName, fingerprint: movieFp, fileName: movieFile.name,
+    camera: myMedia.camera, mic: myMedia.mic,
+  });
 
   net.onChat = ({ text, mediaTime }, from) =>
     chat.receive({ text, mediaTime, who: net.name(from) });
@@ -294,6 +369,11 @@ async function start(roomCode) {
     fingerprint: movieFp,
     fileName: movieFile.name,
     duration: video.duration,
+    // Whether we are sending video/audio at all. Without this, "they left the
+    // camera box unticked" and "the media path is broken" look identical from the
+    // other end — which is exactly the confusion this pair of fields exists to end.
+    camera: myMedia.camera,
+    mic: myMedia.mic,
   });
 
   net.onPeerJoin = id => {
@@ -328,21 +408,35 @@ async function start(roomCode) {
     // arrived FIRST set the name on a tile that did not exist yet and was lost —
     // which is exactly how every tile ended up blank.
     call.setPeerName(from, net.name(from));
+    revealPeerMediaControls();
   };
+
+  /**
+   * Voice volume and auto-duck act on other people's audio, so they are useful the
+   * moment anyone sends us a stream — including when we joined with no camera and
+   * no mic of our own. They used to be tied to OUR camera, which left a camera-off
+   * viewer with no way to turn down a loud room.
+   */
+  const revealPeerMediaControls = () =>
+    document.querySelectorAll('[data-needs-peer-media]').forEach(el => (el.hidden = false));
 
   // Wired here, before the await, for the reason documented at the top of this
   // block: peer meta arrives while the camera prompt is still open, and a handler
   // assigned after the await misses it entirely (no names, no roster, no
   // file-mismatch warning).
   const greeted = new Set();
-  net.onMeta = ({ name, fingerprint: theirFp, fileName }, from) => {
-    call?.setPeerName(from, name || 'Someone');
+  net.onMeta = ({ name, fingerprint: theirFp, fileName, camera }, from) => {
+    const who = name || 'Someone';
+    call?.setPeerName(from, who);
 
     // Meta can arrive more than once per person (we re-send on every join so the
     // roster stays complete), so only announce them the first time.
     if (!greeted.has(from)) {
       greeted.add(from);
-      chat.system(`${name || 'Someone'} joined.`);
+      // Say up front whether there will be any video from them. Silence here is
+      // what made "they left the box unticked" look like a bug for an evening:
+      // you sit waiting for a tile that was never coming.
+      chat.system(camera === false ? `${who} joined — no camera.` : `${who} joined.`);
     }
 
     if (theirFp && movieFp && theirFp !== movieFp) {
@@ -358,35 +452,57 @@ async function start(roomCode) {
   net.onRoster = () => renderRoster();
 
   // ── call (async — everything above must already be wired) ──
-  const wantCamera = lobby.camera.checked;
-
   ({ call, duck } = await startCall({
     selfVideo: $('selfVideo'),
     selfTile: $('selfTile'),
     tiles: $('peerTiles'),
-    enabled: wantCamera,
+    wantVideo: wantCamera,
+    wantAudio: wantMic,
   }));
 
-  if (call.off) {
-    // Deliberate, so no warning — just hide the controls that would do nothing.
-    document.querySelectorAll('[data-needs-camera]').forEach(el => (el.hidden = true));
-  } else if (call.error) {
+  if (call.error) {
+    // Name only what was actually asked for, so "camera unavailable" never appears
+    // to someone who only wanted a microphone.
+    const asked = [wantCamera && 'Camera', wantMic && 'microphone'].filter(Boolean).join(' and ');
     banner(banners, {
       id: 'cam', kind: 'warn', sticky: true,
-      title: 'Camera and mic unavailable',
-      body: 'Sync and chat still work, but you won\'t see or hear each other. Check the browser permission prompt.',
+      title: `${asked} unavailable`,
+      body: 'Sync and chat still work, but the others won\'t see or hear you. '
+          + 'Check the browser permission prompt.',
     });
-    document.querySelectorAll('[data-needs-camera]').forEach(el => (el.hidden = true));
-  } else {
+  } else if (!call.off) {
     // Covers the other ordering: a peer who was already here when the camera came
     // up. The targeted re-send in onPeerJoin covers peers who arrive after.
     net.addStream(call.stream);
   }
 
+  // Our own controls follow what we actually got, not what we asked for — a denied
+  // camera should not leave a dead 📷 button on the bar.
+  document.querySelectorAll('[data-needs-cam]').forEach(el => (el.hidden = !call.hasVideo));
+  document.querySelectorAll('[data-needs-mic]').forEach(el => (el.hidden = !call.hasAudio));
+
+  if (call.hasAudio) {
+    // The answer to "why does the movie suddenly sound like a phone call?". The OS
+    // puts the machine in call mode for as long as a mic track is live, and no
+    // amount of code on our side undoes that — so say it plainly instead.
+    banner(banners, {
+      id: 'micaudio', kind: 'warn',
+      title: 'Your mic is on, so the movie audio is degraded',
+      body: 'Bluetooth headphones drop to the mono call profile while a microphone is '
+          + 'live, and Windows quietens everything else. For full movie sound, rejoin '
+          + 'with the mic unticked and talk on WhatsApp.',
+    });
+  }
+
+  // Now that the devices have resolved, correct the optimistic media flags we sent
+  // to anyone who joined during the permission prompt.
+  publishMedia();
+
   while (pendingStreams.length) {
     const [from, stream] = pendingStreams.shift();
     call.attachPeer(from, stream);
     call.setPeerName(from, net.name(from));
+    revealPeerMediaControls();
   }
 
   renderRoster();

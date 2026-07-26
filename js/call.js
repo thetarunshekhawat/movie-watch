@@ -23,24 +23,39 @@ const DUCK_TO = 0.3;
 const RELEASE_MS = 500;
 
 /**
- * `enabled: false` means the user deliberately chose to watch without cameras.
- * That is not an error state — we skip getUserMedia entirely, so there is no
- * permission prompt, no media track, and crucially no ICE renegotiation to send
- * one. Chat, reactions and playback sync then ride a data-only peer connection,
- * which is far more likely to survive between two networks with no TURN relay.
+ * Both `wantVideo: false` and `wantAudio: false` means the user deliberately chose
+ * to watch without any media. That is not an error state — we skip getUserMedia
+ * entirely, so there is no permission prompt, no media track, and crucially no ICE
+ * renegotiation to send one. Chat, reactions and playback sync then ride a
+ * data-only peer connection, which is far more likely to survive between two
+ * networks with no TURN relay.
+ *
+ * Video and audio are requested independently, and that separation is the whole
+ * point rather than a nicety. Opening the microphone puts the operating system
+ * into call mode for as long as the track is live: Bluetooth headphones renegotiate
+ * from A2DP down to the mono headset profile, and Windows applies its
+ * "Communications" ducking to every other sound. The movie you came to watch then
+ * plays back at phone quality. Camera-only costs none of that, so someone who
+ * wants faces but not voices can have exactly that. See PROJECT.md.
  */
-export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) {
+export async function startCall({ selfVideo, selfTile, tiles, wantVideo = true, wantAudio = true }) {
   let stream = null;
   let error = null;
 
-  if (enabled) {
+  if (wantVideo || wantAudio) {
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: wantVideo
+          ? { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } }
+          : false,
+        audio: wantAudio
+          ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+          : false,
       });
       selfVideo.srcObject = stream;
-      selfTile.hidden = false;
+      // Audio-only means there is nothing to show in our own tile, so don't show
+      // an empty black box.
+      selfTile.hidden = !stream.getVideoTracks().length;
     } catch (err) {
       // Denied or no device. The movie half of the app still works fine.
       error = err;
@@ -83,8 +98,11 @@ export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) 
   const call = {
     stream,
     error,
-    /** True when the user chose to watch without cameras — distinct from `error`. */
-    off: !enabled,
+    /** True when the user chose to watch without any media — distinct from `error`. */
+    off: !(wantVideo || wantAudio),
+    /** What we actually ended up with, which is what the room needs to be told. */
+    get hasVideo() { return !!stream?.getVideoTracks().length; },
+    get hasAudio() { return !!stream?.getAudioTracks().length; },
     micOn: true,
     camOn: true,
 
@@ -112,14 +130,14 @@ export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) 
     },
 
     toggleMic() {
-      if (!stream) return false;
+      if (!call.hasAudio) return false;
       call.micOn = !call.micOn;
       stream.getAudioTracks().forEach(t => (t.enabled = call.micOn));
       return call.micOn;
     },
 
     toggleCam() {
-      if (!stream) return false;
+      if (!call.hasVideo) return false;
       call.camOn = !call.camOn;
       stream.getVideoTracks().forEach(t => (t.enabled = call.camOn));
       selfTile.classList.toggle('cam-off', !call.camOn);
@@ -128,7 +146,7 @@ export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) 
 
     /** Push-to-talk: hold to un-mute, release to re-mute. */
     setTalking(on) {
-      if (!stream || call.micOn) return;
+      if (!call.hasAudio || call.micOn) return;
       stream.getAudioTracks().forEach(t => (t.enabled = on));
     },
 

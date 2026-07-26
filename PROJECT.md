@@ -41,7 +41,7 @@ on its own machine.
 | Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified |
 | Player + file handling | `js/player.js` | ✅ Done — codec + audio preflight, fingerprint |
 | Subtitles | `js/subs.js` | ✅ Done — SRT→VTT verified |
-| Video call + auto-duck | `js/call.js` | ✅ Verified 3-way with synthetic cameras. Opt-in, off by default; real webcams and cross-network still unproven |
+| Video call + auto-duck | `js/call.js` | ✅ Verified 3-way with synthetic cameras. Camera and mic are separately opt-in, both off by default; real webcams and cross-network still unproven |
 | Chat + reactions | `js/chat.js` | ✅ Done — verified peer-to-peer |
 | Layout / controls | `js/ui.js` | ✅ Done |
 | README | `README.md` | ✅ Done |
@@ -143,6 +143,22 @@ webcam is a nice-to-have that WhatsApp can cover. So the lobby ships with the ca
 an unticked box means `getUserMedia` is never called at all: no prompt, no media track, no
 renegotiation. Tick it only when both people are on the same network, or once TURN is configured.
 
+**Camera and microphone are separate checkboxes.** They used to be one box labelled "camera and
+mic". They were split because their costs are wildly different. A camera track is close to free.
+An open microphone track puts the whole *machine* into call mode for as long as it is live:
+Bluetooth headphones renegotiate from A2DP down to the mono headset profile, and Windows applies
+its "Communications" ducking to every other sound. The movie you came to watch then plays at phone
+quality — and since this app exists to watch a movie, that is a direct hit on the one thing it is
+for. Splitting the boxes lets someone have faces without paying for voices. See the gotcha; this
+is an OS-level behaviour and no amount of `getUserMedia` constraint tuning avoids it.
+
+**Everyone broadcasts whether they have a camera on.** `meta` carries `camera` and `mic` booleans
+and the roster renders a NO CAMERA tag. This is diagnostics, not a feature: without it, "they
+never ticked the box" and "the media path is broken" look *identical* from the other end — you sit
+staring at a missing tile with nothing anywhere in the UI to tell you which. That ambiguity cost a
+session. Same reasoning as the roster and the Path row: make the boring explanation visible so
+nobody goes hunting for a WebRTC bug that isn't there.
+
 **Everyone corrects toward the host; the host never corrects.** If peers correct toward each other
 they oscillate forever, and with three or more people chasing several clocks at once nothing ever
 settles. One reference is the only stable arrangement.
@@ -188,9 +204,16 @@ All messages are Trystero actions created with `room.makeAction(name)`.
 | `stall` | broadcast | `{stalled: boolean}` | One side is buffering; other side waits |
 | `chat` | broadcast | `{text, mediaTime, sentAt}` | Text message; `mediaTime` timestamps it against the movie |
 | `react` | broadcast | `{emoji}` | Floating emoji reaction |
-| `meta` | targeted on every join, + broadcast | `{name, joinedAt, fingerprint, fileName, duration}` | Identity, roster and host election. `joinedAt` is the sender's wall clock |
+| `meta` | targeted on every join, + broadcast | `{name, joinedAt, fingerprint, fileName, duration, camera, mic}` | Identity, roster and host election. `joinedAt` is the sender's wall clock. `camera`/`mic` say whether the sender is sending video/audio at all — see below |
 
 | `ping` | request/response | `→ n`, `← n` | RTT probe. Uses `kind: 'request'` |
+
+`meta.camera` and `meta.mic` are sent **twice on purpose**. `onPeerJoin` fires routinely while the
+`getUserMedia` prompt is still open, so the first `meta` carries our *intent* (the checkbox state,
+readable synchronously), and `publishMedia()` re-broadcasts the *truth* once the devices have
+actually resolved — which matters when permission is denied. A peer's `camera` being `undefined`
+means their `meta` has not arrived yet and is deliberately distinct from `false`; the roster stays
+quiet rather than claiming "no camera" about someone it has not heard from.
 
 Every handler receives the **sender's peer id** as a second argument. Use it — do not assume
 `net.peerId` (see the ghost-peer entry under Gotchas).
@@ -231,6 +254,28 @@ any replacement list.
 camera end-to-end test — every tile rendered video with a blank name.)* A peer tile is only created
 when their stream arrives, so a `meta` that landed first called `setPeerName` on a tile that did
 not exist yet and the name was silently dropped. Both `onStream` and the roster render now set it.
+
+**"I can see them but they can't see me" is almost always an unticked checkbox, not a bug.**
+*(Cost a session, and sent the investigation straight into Trystero's renegotiation internals
+before anyone checked the obvious thing.)* One-way video looks like a serious WebRTC fault —
+glare during simultaneous ICE renegotiation genuinely can drop media in exactly one direction, so
+the theory is plausible enough to burn an hour on. But the boring cause is that the other person
+left the camera box unticked, which by design means `getUserMedia` is never called and they have
+literally nothing to send. Both ends then behave *perfectly correctly* and the result is
+indistinguishable from a broken media path, because nothing in the UI ever said "this person has
+no camera". It does now: `meta` carries `camera`/`mic`, the roster shows a NO CAMERA tag, and the
+join message reads "Bob joined — no camera." **Check the roster tag before debugging WebRTC.**
+
+**An open microphone wrecks the movie audio, and it is the OS doing it, not the app.** *(Reported
+as "the movie sounds like a video call".)* For as long as a mic track is live, the machine is in
+call mode: Bluetooth headphones drop from A2DP stereo to the mono HFP/mSBC headset profile — a
+brutal, instantly audible quality cut — and Windows' "Communications" setting ducks every other
+sound by 80% on top of it. Nothing in `getUserMedia` constraints prevents this; turning off
+`echoCancellation`/`noiseSuppression`/`autoGainControl` does not help, because the trigger is the
+capture device being open at all. Muting via `track.enabled = false` does **not** fix it either —
+the track is still live and the device is still held. Only stopping the track releases the
+profile. Hence camera and mic are separate boxes, and the mic carries a warning in the lobby and a
+banner in the player. For full movie sound: mic off, talk on WhatsApp.
 
 **`room.addStream(stream)` only reaches peers who are ALREADY in the room.** *(Found after the
 first real two-machine session — neither person could see the other's camera.)* It is not a
@@ -336,10 +381,11 @@ replace `,` with `.` in timestamps.
 
 ## Known issues
 
-**Camera path is entirely unverified.** Headless Chrome has no camera, so `call.js` has never
-actually run with a real stream. Auto-duck, the speaking-indicator border, tile drag/resize with
-live video, and push-to-talk are all written but untested. The no-camera fallback *is* verified —
-it shows a warning banner and sync keeps working.
+**No physical camera or microphone has ever run through this code.** The media path itself is
+verified — 3-way with canvas `captureStream`, and again for the camera-on/camera-off pair — but
+every test substituted a synthetic stream for `getUserMedia`. Auto-duck, the speaking-indicator
+border, tile drag/resize with live video, and push-to-talk depend on real audio levels and real
+device behaviour, so they remain untested. Echo behaviour is untested for the same reason.
 
 **Fullscreen overlay is unverified.** The code deliberately fullscreens the `#stage` container
 rather than the `<video>`, which is the documented fix, but this has not been observed working.
@@ -376,10 +422,18 @@ Read the Settings (⚙) rows to tell the cases apart:
    Metered (metered.ca) gives 50GB/month free with no card and hands back exactly the shape the
    commented-out block expects.
 3. **Verify the camera fix on two real machines** once TURN is in. The `addStream` fix is proven
-   against a synthetic stream but has not run with a real webcam across the internet.
-4. Consider reordering/pinning Nostr relays to drop the ones with bad certificates
+   against a synthetic stream but has not run with a real webcam across the internet. **Before
+   concluding anything is broken, read the roster:** a NO CAMERA tag means there was never a
+   stream to receive, and that is not a bug to chase.
+4. **Consider releasing the mic track on mute** rather than setting `track.enabled = false`.
+   Muting today keeps the capture device open, so Bluetooth headphones stay stuck in the mono
+   call profile and the movie audio stays degraded even while nobody is talking. Stopping the
+   track and re-acquiring on unmute would restore full audio between sentences — at the cost of
+   an ICE renegotiation on every toggle, which is exactly the fragility that made cameras opt-in
+   in the first place. Not obviously worth it; decide with real hardware in front of you.
+5. Consider reordering/pinning Nostr relays to drop the ones with bad certificates
    (`schnorr.me`, `relay.agorist.space`).
-5. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
+6. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
    sessions, so the movie doesn't have to be re-picked every time.
 
 ---
@@ -387,6 +441,35 @@ Read the Settings (⚙) rows to tell the cases apart:
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-27 — one-way video explained, and the mic stops ruining the movie audio
+
+Two reports from a real session: "they can see me but I can't see them", and "the movie sounds
+like a video call". Neither turned out to be a WebRTC fault.
+
+- **One-way video was an unticked checkbox.** The other person left the camera box off, which by
+  design skips `getUserMedia` entirely — so they had nothing to send, both ends behaved correctly,
+  and the result was indistinguishable from a broken media path because nothing ever said so.
+  `meta` now carries `camera` and `mic`, the roster shows a **NO CAMERA** tag, and the join
+  message reads "Bob joined — no camera." Sent twice: intent first (the checkbox, readable while
+  the permission prompt is still open), corrected after the devices resolve.
+- **Camera and mic are now separate checkboxes.** An open mic track puts the OS in call mode —
+  Bluetooth headphones drop to the mono headset profile, Windows ducks everything else — which
+  degrades the movie audio this app exists to play. Camera-only costs none of that. The mic box
+  carries a warning in the lobby and a banner in the player, because no code-side constraint
+  avoids the OS behaviour.
+- **Fixed: voice volume and auto-duck were tied to your own camera.** They act on *incoming*
+  audio, so someone watching camera-off had no way to turn down a loud room. They now appear when
+  the first peer stream arrives, regardless of what you are sending.
+- **Fixed: a denied camera left a dead 📷 button** on the bar. Controls now follow the tracks
+  actually obtained, not the ones requested, and the permission-failure banner names only what was
+  asked for.
+
+Verified with two peers on one room (canvas `captureStream` standing in for a webcam): the
+camera-on peer's roster shows the camera-off peer tagged NO CAMERA with the matching join message
+and no phantom tile; the camera-off peer receives and renders the other's video, gets the voice
+and auto-duck controls, and correctly hides both of its own mic and camera buttons. Only console
+noise was the known `schnorr.me` certificate error.
 
 ### 2026-07-26 — group rooms: roster, host, and a synchronised start
 
