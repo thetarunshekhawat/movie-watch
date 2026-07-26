@@ -43,6 +43,28 @@ const APP_ID = 'movie-watch-p2p-v1';
  */
 const TURN = [];
 
+/**
+ * Nostr relays, pinned rather than left to Trystero's defaults.
+ *
+ * Two peers only find each other if they share at least one working relay. The
+ * default list contains several that fail outright from here — `schnorr.me`,
+ * `relay.agorist.space` and `relay.nostr.bg` refuse the connection, and
+ * `relay.nostr.band` times out — which both spams the console and, worse, eats
+ * into the redundancy budget so the two sides can end up subscribed to disjoint
+ * sets of working relays and never see each other.
+ *
+ * Every URL below was verified to accept a WebSocket connection. `redundancy`
+ * is raised to 4 so a peer pair has to be very unlucky to share none.
+ */
+const RELAYS = [
+  'wss://relay.damus.io',
+  'wss://nos.lol',
+  'wss://relay.primal.net',
+  'wss://relay.snort.social',
+  'wss://nostr.mom',
+  'wss://offchain.pub',
+];
+
 const PING_INTERVAL_MS = 10_000;
 const RTT_SAMPLES = 7;
 
@@ -51,7 +73,10 @@ export { selfId };
 export function connect(roomCode) {
   // Only pass turnConfig when we actually have relays, so the default-STUN-only
   // path stays exactly the documented default rather than "default plus empty list".
-  const config = { appId: APP_ID };
+  const config = {
+    appId: APP_ID,
+    relayConfig: { urls: RELAYS, redundancy: 4 },
+  };
   if (TURN.length) config.turnConfig = TURN;
 
   const room = joinRoom(config, roomCode);

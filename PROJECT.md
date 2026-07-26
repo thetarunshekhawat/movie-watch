@@ -178,6 +178,25 @@ clocks are not synchronised) — only the RTT-derived `oneWay` estimate is used 
 
 > Append to this as new ones are hit. Each one here cost real debugging time.
 
+**A stale window on your own machine will impersonate your partner.** *(Cost an entire evening.)*
+Trystero connects you to every peer in the room, including a Movie Watch window you left open in
+another browser hours ago. `net.js` nominates the most recently joined peer, so the local ghost
+wins — and everything then looks healthy: green dot, "Connected", 2ms latency, drift correction
+running. It is all real. It is just talking to itself. The tell is the **Path** row: `host/host`
+means both ends reached each other over local interface addresses, which is impossible across the
+internet. The second tell is the **Watching with** row showing your own name back at you. Both
+rows exist because neither was there when this happened, and without them the failure is
+indistinguishable from a broken sync engine. `pagehide` is now wired alongside `beforeunload` to
+cut down on ghosts in the first place, but it cannot catch every case — a crashed or force-quit
+browser always leaves one.
+
+**Pin the Nostr relays; the defaults include dead ones.** Two peers only find each other if they
+share a working relay. Verified from here: `schnorr.me`, `relay.agorist.space` and
+`relay.nostr.bg` refuse the connection outright and `relay.nostr.band` times out. Dead relays do
+not just make noise — they consume the redundancy budget, so the two sides can end up subscribed
+to disjoint sets of working relays and never discover each other at all. `net.js` now pins six
+verified relays with `redundancy: 4`.
+
 **`room.addStream(stream)` only reaches peers who are ALREADY in the room.** *(Found after the
 first real two-machine session — neither person could see the other's camera.)* It is not a
 broadcast that new peers pick up. We called it once, immediately after the camera prompt resolved,
@@ -294,32 +313,31 @@ rather than the `<video>`, which is the documented fix, but this has not been ob
 `ERR_CERT_AUTHORITY_INVALID` and spams the console. Harmless — Trystero connects through the other
 relays — but it makes the console noisy when debugging.
 
-**Webcams do not work between two networks, because there is no TURN server.** `TURN` in `net.js`
-is an empty array, so a peer pair that cannot reach each other directly has no fallback. In the
-first Mac↔Windows session (different networks) both sides showed "Connected" but neither the video
-nor playback sync worked.
+**The two machines have never yet connected to each other.** Every session so far ended with each
+browser talking to a stale window on its own laptop (see the ghost-peer gotcha). So there is still
+**no evidence either way** about whether a direct cross-network path works, and none about whether
+TURN is needed. `TURN` in `net.js` is an empty array.
 
-Two separate causes, one fixed and one worked around:
+Read the Settings (⚙) rows to tell the cases apart:
 
-- The `addStream` bug above meant neither camera was ever sent, on any network. Fixed.
-- Sync dying at the same time is **not fully explained**. Two tabs on one machine sync correctly —
-  play, pause, seek, scrub, chat, reactions — so the engine is sound. The leading theory is that
-  adding a camera stream renegotiated ICE, failed for want of a relay, and took the whole peer
-  connection down with it. Cameras are now opt-in and off by default, which sidesteps it; if the
-  next two-machine test syncs cleanly with cameras off, the theory is confirmed.
-
-The Connection/Path readouts in Settings exist to settle this: `Path` shows `relay` when going
-through TURN, `srflx`/`prflx` when direct, `host` when same-machine; `Connection` shows the real
-`RTCPeerConnection` state. **Open Settings (⚙) on both machines and read those two rows first.**
+| Reading | Means |
+|---|---|
+| `Path: host/host` | Same machine or same LAN. Across the internet this is a ghost window. |
+| `Path: srflx/srflx` or `prflx` | Genuine direct connection between the two machines. |
+| `Path: relay/…` | Going through a TURN server. |
+| `Peers in room: 0` | The two never found each other — signaling or discovery problem. |
+| `Connection: failed` | Found each other, but no usable network route. **This** is what TURN fixes. |
 
 ---
 
 ## Next steps
 
-1. **Re-test across the two machines with cameras OFF.** This is the immediate next step. Sync,
-   chat, reactions and presence should all work; if they do, the camera renegotiation theory is
-   confirmed. Open Settings (⚙) on both sides and record `Connection` and `Path` either way.
-2. **Add a TURN server** — only needed to get the webcams back. `TURN` in `net.js` is empty.
+1. **Re-test with every other Movie Watch window closed on both machines.** Quit both browsers
+   completely first — that is the only way to be sure no ghost survives. Then check the **Path**
+   row: anything other than `host/host` means the two laptops have genuinely found each other.
+   Only once that is true is there any evidence about whether TURN is needed.
+2. **Add a TURN server** if, with ghosts gone, the two machines still never connect (`Peers in
+   room: 0`) or the connection reports `failed`. `TURN` in `net.js` is empty.
    Metered (metered.ca) gives 50GB/month free with no card and hands back exactly the shape the
    commented-out block expects.
 3. **Verify the camera fix on two real machines** once TURN is in. The `addStream` fix is proven
@@ -334,6 +352,25 @@ through TURN, `srflx`/`prflx` when direct, `host` when same-machine; `Connection
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-26 — root cause found: both sides were connected to their own stale windows
+
+The new diagnostics paid for themselves on the first run. Both machines reported
+`Path: host/host`, `Peers in room: 1`, ~2-5ms latency — and each showed the *other* name than
+expected: the Mac said "watching with Tarun" (Tarun's own machine), the PC said "watching with
+Apoorv" (Apoorv's own machine). A host/host candidate pair cannot occur across the internet. Each
+browser had connected to a leftover Movie Watch window on its own laptop; **the two laptops never
+discovered each other at all.** Every earlier theory (renegotiation killing the link, TURN) was
+wrong, or at least unproven — there was never a cross-machine connection to break.
+
+- **Pinned the Nostr relay list** to six verified-reachable relays with `redundancy: 4`. Four of
+  the defaults are dead from here and were burning redundancy budget, which is a plausible reason
+  the two machines never met. Also silences the console cert spam.
+- **Added a `host/host` warning banner** naming the peer, so a local-only connection announces
+  itself instead of masquerading as success.
+- **Added a "Watching with" diagnostics row** showing the peer's name and your own side by side.
+  Seeing your own name in it is the instant tell.
+- **Wired `pagehide` alongside `beforeunload`** so windows leave the room more reliably.
 
 ### 2026-07-26 — cameras made opt-in so sync and chat survive without TURN
 

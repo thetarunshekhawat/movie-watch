@@ -427,6 +427,9 @@ async function start(roomCode) {
     $('diagRtt').textContent = net.rttMs != null ? `${net.rttMs} ms` : '—';
     $('diagRole').textContent = net.peerId ? (net.isReference ? 'reference' : 'follower') : '—';
     $('diagPeers').textContent = String(net.peerCount);
+    // Showing the name here is not cosmetic: seeing your OWN name in this row is
+    // the fastest way to spot that you are connected to a stale local window.
+    $('diagPeerName').textContent = net.peerId ? `${peerName} (you are ${myName})` : '—';
     if (net.peerId) {
       const s = sync.stalled;
       $('peerState').textContent = s.them ? `${peerName} is buffering`
@@ -439,6 +442,23 @@ async function start(roomCode) {
     const d = await net.diagnose();
     $('diagConn').textContent = d.state;
     $('diagPath').textContent = d.candidate;
+
+    // A host/host candidate pair means both ends reached each other over local
+    // interface addresses — same machine, or same LAN. It cannot happen across
+    // the internet. This is exactly how an evening got lost: both people were
+    // connected to a leftover Movie Watch window on their OWN laptop, each
+    // showing a confident green "Connected", while the two laptops had never
+    // found each other at all.
+    if (net.peerId && d.candidate === 'host/host') {
+      banner(banners, {
+        id: 'localpeer', kind: 'warn', sticky: true,
+        title: `This connection is on your own machine`,
+        body: `You are connected to "${peerName}" over a local-only network path. `
+            + 'If they are on a different computer, this is a stale Movie Watch window '
+            + 'on THIS one — close your other tabs and windows, then reload. '
+            + '(Fine to ignore if you are both on the same wifi.)',
+      });
+    }
     if (net.peerId && (d.state === 'failed' || d.state === 'disconnected')) {
       $('connDot').dataset.state = 'lost';
       $('connText').textContent = d.state === 'failed'
@@ -480,9 +500,18 @@ async function start(roomCode) {
     body: 'Movie audio from speakers will echo into your mic and back to them.',
   });
 
-  window.addEventListener('beforeunload', () => {
+  // `beforeunload` alone is not enough — it does not fire reliably when a tab is
+  // discarded, backgrounded on mobile, or closed via the OS. A window that never
+  // leaves lingers in the room as a "ghost" that the next session connects to
+  // instead of the real person. `pagehide` covers the cases beforeunload misses.
+  let departed = false;
+  const depart = () => {
+    if (departed) return;
+    departed = true;
     sync.destroy();
     call.stop();
     net.leave();
-  });
+  };
+  window.addEventListener('beforeunload', depart);
+  window.addEventListener('pagehide', depart);
 }

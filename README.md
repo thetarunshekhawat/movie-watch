@@ -135,9 +135,17 @@ no TURN relay configured, so there's no route for the video. Open Settings (⚙)
 `host` means same machine, `srflx`/`prflx` means direct, `relay` means TURN. Leave cameras off and
 use a phone call instead; sync and chat don't need any of this.
 
-**"Connected" but nothing syncs.**
-Open Settings (⚙) and read **Connection**. If it says `failed` or `disconnected`, the peer link is
-dead regardless of what the dot says — reload both sides with cameras off.
+**"Connected" but nothing syncs — check this first.**
+Open Settings (⚙) and read **Path** and **Watching with**.
+
+- **Path says `host/host`** and the other person is on a different computer → you are connected to
+  a leftover Movie Watch window on *your own* machine. It looks completely healthy — green dot,
+  low latency, a name — and it is talking to itself. **Quit your browser entirely** (not just the
+  tab) on both machines and start again.
+- **Watching with shows your own name** → same thing, confirmed.
+- **Peers in room: 0** → you never found each other. Check you both typed the exact same room code.
+- **Connection: failed** → you found each other but there's no network route between you. That
+  needs a TURN server, which isn't configured yet.
 
 ---
 
