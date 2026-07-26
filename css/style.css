@@ -32,6 +32,14 @@ html, body {
 button { font: inherit; color: inherit; cursor: pointer; }
 input  { font: inherit; }
 
+/* The whole app shows and hides panels with the `hidden` attribute. The browser
+   implements that as `[hidden] { display: none }` in its own stylesheet, which
+   ANY author `display` rule outranks — so `.lobby { display: grid }` silently
+   beat `lobby.hidden = true` and left the lobby covering the joined session.
+   This restores the attribute's meaning for every element at once. Keep it above
+   the component rules; `!important` is what makes it win. */
+[hidden] { display: none !important; }
+
 /* ═══════════════════ LOBBY ═══════════════════ */
 
 .lobby {
