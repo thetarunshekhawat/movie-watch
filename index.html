@@ -41,17 +41,31 @@
       <p class="file-status" id="subStatus"></p>
     </div>
 
-    <!-- Off by default on purpose. Sending a camera stream forces an ICE
-         renegotiation, and without a TURN relay that can kill an otherwise healthy
-         peer connection — taking chat, reactions and playback sync down with it.
-         Leaving this unticked keeps the connection data-only and robust. -->
+    <!-- Both off by default on purpose. Sending media forces an ICE renegotiation,
+         and without a TURN relay that can kill an otherwise healthy peer connection
+         — taking chat, reactions and playback sync down with it. Leaving these
+         unticked keeps the connection data-only and robust.
+
+         Camera and mic are SEPARATE because they have very different costs. The
+         camera is nearly free. Opening the mic makes the OS treat the whole machine
+         as being in a call: Bluetooth headphones drop from A2DP to the mono
+         headset profile and Windows ducks every other sound — which wrecks the
+         movie audio you are there to listen to. See PROJECT.md. -->
     <div class="field">
       <label class="check">
         <input type="checkbox" id="useCamera">
-        <span>Turn on camera and mic
+        <span>Turn on camera
           <span class="hint">— off by default; sync and chat are more reliable without it</span>
         </span>
       </label>
+      <label class="check">
+        <input type="checkbox" id="useMic">
+        <span>Turn on microphone
+          <span class="hint">— ⚠ makes the movie sound like a phone call on Bluetooth
+            headphones. Leave this off and talk on WhatsApp instead.</span>
+        </span>
+      </label>
+      <p class="hint" id="mediaHint"></p>
     </div>
 
     <details class="checklist">
@@ -123,19 +137,23 @@
         <span class="ctl-tag">just you</span>
       </div>
 
-      <!-- data-needs-camera: hidden when watching without cameras, since these
-           controls would have nothing to act on. -->
-      <div class="ctl-group" data-needs-camera title="Their voice volume — only affects you">
+      <!-- These three act on INCOMING media, so they depend on somebody else having
+           sent us a stream — not on whether we sent one. They stay hidden until the
+           first peer stream arrives. (They used to be tied to our own camera, which
+           meant watching camera-off left you unable to turn down someone's voice.) -->
+      <div class="ctl-group" data-needs-peer-media hidden title="Their voice volume — only affects you">
         <span class="ctl-icon">🗣</span>
         <input type="range" id="voiceVolume" class="slider" min="0" max="1" step="0.01" value="1">
         <span class="ctl-tag">just you</span>
       </div>
 
-      <span class="divider" data-needs-camera></span>
+      <span class="divider" data-needs-peer-media hidden></span>
 
-      <button id="micBtn" class="ctl" data-needs-camera title="Mute / unmute your mic (M)">🎙</button>
-      <button id="camBtn" class="ctl" data-needs-camera title="Camera on / off">📷</button>
-      <button id="duckBtn" class="ctl active" data-needs-camera title="Auto-lower movie volume when they speak">🔉</button>
+      <!-- These two act on our OWN tracks, and camera and mic are independently
+           optional, so they are gated separately. -->
+      <button id="micBtn" class="ctl" data-needs-mic title="Mute / unmute your mic (M)">🎙</button>
+      <button id="camBtn" class="ctl" data-needs-cam title="Camera on / off">📷</button>
+      <button id="duckBtn" class="ctl active" data-needs-peer-media hidden title="Auto-lower movie volume when they speak">🔉</button>
 
       <span class="divider"></span>
 

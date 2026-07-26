@@ -492,6 +492,9 @@ input  { font: inherit; }
 .roster .tag.host { background: rgba(255,107,107,.18); color: var(--accent); }
 .roster .tag.you  { background: var(--surface-2); color: var(--text-dim); }
 .roster .tag.mismatch { background: rgba(251,191,36,.18); color: var(--warn); }
+/* Deliberately neutral, not a warning colour — watching without a camera is a
+   legitimate choice, and this tag exists to explain a missing tile, not to nag. */
+.roster .tag.nocam { background: var(--surface-2); color: var(--text-dim); }
 .roster .ping { flex: none; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .roster .dot { flex: none; }
 #startAllBtn { width: 100%; }

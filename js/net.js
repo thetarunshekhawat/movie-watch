@@ -182,6 +182,11 @@ export function connect(roomCode) {
           name: p.name,
           fingerprint: p.fingerprint,
           fileName: p.fileName,
+          // Undefined until their meta lands — deliberately distinct from `false`,
+          // so the roster can stay quiet rather than claim "no camera" about
+          // someone we simply have not heard from yet.
+          camera: p.camera,
+          mic: p.mic,
           isSelf: p.id === selfId,
           isHost: p.id === hostId,
           known: p.joinedAt != null,
