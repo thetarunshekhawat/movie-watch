@@ -41,7 +41,7 @@ on its own machine.
 | Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified |
 | Player + file handling | `js/player.js` | ✅ Done — codec + audio preflight, fingerprint |
 | Subtitles | `js/subs.js` | ✅ Done — SRT→VTT verified |
-| Video call + auto-duck | `js/call.js` | ✅ Verified 3-way with synthetic cameras. Opt-in, off by default; real webcams and cross-network still unproven |
+| Video call + auto-duck | `js/call.js` | ✅ Verified 2-way and 3-way with synthetic cameras, including tiles, badges, fade and drag. Opt-in, off by default; real webcams and cross-network still unproven |
 | Chat + reactions | `js/chat.js` | ✅ Done — verified peer-to-peer |
 | Layout / controls | `js/ui.js` | ✅ Done |
 | README | `README.md` | ✅ Done |
@@ -61,6 +61,15 @@ tiles created/labelled/removed cleanly.
 (`startCall` → `addStream` → targeted re-send on join → `onPeerStream` → tile):
 all three peers received both other streams, tiles were labelled correctly, and
 playback sync held while three cameras were streaming.
+
+**Tile behaviour verified two-way** with the same harness (two tabs, synthetic
+camera + oscillator mic): a peer tile dragged from `top: 150px` to `top: 570px`
+and stayed inside the stage, the speaking outline appeared on the talker's *own*
+tile and on the listener's tile for them, the movie ducked to 0.3 for the
+listener only, the 🔇 badge and camera-off placeholder crossed the wire in both
+directions, the fade slider dimmed every tile to 0.3 with hover restoring 1.0,
+the size slider resized both tiles together, and subtitles moved from line 92 to
+line 80 when the control bar appeared and back when it hid.
 
 **Not yet verified:** a physical camera or microphone (so echo behaviour and
 push-to-talk are still untested), fullscreen overlay behaviour, and — the big
@@ -189,6 +198,7 @@ All messages are Trystero actions created with `room.makeAction(name)`.
 | `chat` | broadcast | `{text, mediaTime, sentAt}` | Text message; `mediaTime` timestamps it against the movie |
 | `react` | broadcast | `{emoji}` | Floating emoji reaction |
 | `meta` | targeted on every join, + broadcast | `{name, joinedAt, fingerprint, fileName, duration}` | Identity, roster and host election. `joinedAt` is the sender's wall clock |
+| `av` | targeted on every join, + broadcast on toggle | `{mic: boolean, cam: boolean}` | Mic/camera state, drawn as a 🔇 badge and the camera-off placeholder on that person's tile. Cosmetic only — nothing in sync depends on it |
 
 | `ping` | request/response | `→ n`, `← n` | RTT probe. Uses `kind: 'request'` |
 
@@ -226,6 +236,30 @@ are absent from Trystero's own 47-relay default list for exactly that reason, an
 of the defaults are console noise, not a functional problem; redundancy exists to absorb that.
 Leave relay selection alone unless you can test end-to-end discovery, from two networks, against
 any replacement list.
+
+**A zero-height wrapper silently pins an absolutely-positioned child to the top edge.** *(This is
+why peer tiles could only ever be dragged sideways.)* `#peerTiles` was an unstyled `<div>`, so it
+had height 0 — but the tiles inside it are `position: absolute`, so they were laid out against
+`#stage` and looked fine. The drag code clamped against `tile.parentElement`, i.e. that 0-height
+box: `clamp(top, 0, 0 - h)` reduces to `0` for every input, so vertical drags did nothing while
+horizontal drags worked perfectly. A half-working drag is a much worse symptom than a broken one —
+it reads as a deliberate constraint. Two rules now: `#peerTiles` is a real full-stage layer
+(`position: absolute; inset: 0; pointer-events: none`, with `pointer-events: auto` back on the
+tiles), and drag code clamps against `offsetParent`, which is by definition the box the coordinates
+are relative to. **Never clamp absolute positioning against `parentElement`.**
+
+**Your own tile needs its own analyser, excluded from ducking.** The speaking indicator is driven
+by `duck.watch()`, which was only ever called for incoming peer streams — so your own tile never
+lit up and there was no way to tell whether your mic was live. The local stream is now watched
+too, with a `selfOnly` flag that keeps it out of the `anySpeaking` test: your voice must light your
+tile without ducking your own movie. The AudioContext is also created before any click has
+happened (the camera resolves during load), so it starts `suspended` and reads pure silence unless
+it is resumed — which is why the indicator can look broken in a tab you have not clicked yet.
+
+**Mute state cannot be detected locally; the peer has to tell you.** A remote track whose sender
+set `enabled = false` still arrives as a live track that simply carries silence, indistinguishable
+from someone being quiet. Hence the `av` message. It is sent targeted on join as well as broadcast
+on toggle, because a newcomer would otherwise assume everyone's mic is on.
 
 **Name and stream arrive in either order, so both paths must label the tile.** *(Found in the
 camera end-to-end test — every tile rendered video with a blank name.)* A peer tile is only created
@@ -336,10 +370,12 @@ replace `,` with `.` in timestamps.
 
 ## Known issues
 
-**Camera path is entirely unverified.** Headless Chrome has no camera, so `call.js` has never
-actually run with a real stream. Auto-duck, the speaking-indicator border, tile drag/resize with
-live video, and push-to-talk are all written but untested. The no-camera fallback *is* verified —
-it shows a warning banner and sync keeps working.
+**No real camera or microphone has ever been used.** Headless Chrome has none, so every camera
+test substitutes a canvas `captureStream` for video and an oscillator for audio. That exercises
+the real code path end to end — auto-duck, speaking indicators, tile drag/resize, badges — but it
+says nothing about echo behaviour, `SPEAK_THRESHOLD` against a real voice in a real room, or
+push-to-talk, which remains untested. The no-camera fallback *is* verified — it shows a warning
+banner and sync keeps working.
 
 **Fullscreen overlay is unverified.** The code deliberately fullscreens the `#stage` container
 rather than the `<video>`, which is the documented fix, but this has not been observed working.
@@ -377,9 +413,12 @@ Read the Settings (⚙) rows to tell the cases apart:
    commented-out block expects.
 3. **Verify the camera fix on two real machines** once TURN is in. The `addStream` fix is proven
    against a synthetic stream but has not run with a real webcam across the internet.
-4. Consider reordering/pinning Nostr relays to drop the ones with bad certificates
+4. **Check `SPEAK_THRESHOLD` (0.045) against a real microphone.** Every speaking-indicator test so
+   far has used an oscillator at a fixed level, which says nothing about whether a normal speaking
+   voice crosses the line — or whether movie audio bleeding into the mic crosses it constantly.
+5. Consider reordering/pinning Nostr relays to drop the ones with bad certificates
    (`schnorr.me`, `relay.agorist.space`).
-5. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
+6. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
    sessions, so the movie doesn't have to be re-picked every time.
 
 ---
@@ -387,6 +426,33 @@ Read the Settings (⚙) rows to tell the cases apart:
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-27 — video tiles: drag anywhere, mute badge, fade and size
+
+Seven fixes to the tile and overlay layer, all verified in a live two-peer session with synthetic
+cameras.
+
+- **Fixed: peer tiles could only be dragged sideways.** Their wrapper `#peerTiles` had no height,
+  and the drag code clamped against it — so the vertical clamp collapsed to `0` for every input.
+  The wrapper is now a real full-stage layer and drag clamps against `offsetParent`. See the
+  gotcha; this pattern will bite again.
+- **Fixed: your own tile never showed the speaking outline.** Only incoming streams were analysed.
+  The local stream is now watched too, flagged `selfOnly` so it lights your tile without ducking
+  your own movie.
+- **Mute and camera badges on every tile**, via a new `av` message — a translucent 🔇, and the
+  existing camera-off placeholder for a peer who turns their camera off. Sent targeted on join so
+  late arrivals see the right state.
+- **Subtitles lift clear of the control bar** while it is on screen (12% of video height) and drop
+  back when it hides. Cue position is a property of the cues, not something `::cue` can style, so
+  it is reapplied on `cuechange` as well.
+- **Tile fade and tile size sliders** in Settings, applying to every tile at once via custom
+  properties on `#stage`, both persisted. A faded tile returns to full strength while that person
+  speaks, while you hover it, and while it is being dragged. A hand-resized tile keeps its own
+  width.
+- **The subtitles button is now `CC`, not a second 💬.** It was indistinguishable from the chat
+  button.
+- Peer tile positions persist per seat (arrival order), since peer ids are regenerated each
+  session and can never be matched back to a person.
 
 ### 2026-07-26 — group rooms: roster, host, and a synchronised start
 

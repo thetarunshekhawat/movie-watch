@@ -13,17 +13,33 @@
 
 const IDLE_MS = 3000;
 
-/** Hides the cursor and control bar after inactivity, restores on any movement. */
-export function autoHideControls(stage) {
+/**
+ * Hides the cursor and control bar after inactivity, restores on any movement.
+ *
+ * `onIdleChange(idle)` fires only on an actual transition, so callers can react to
+ * the control bar appearing — subtitles shift up out from under it.
+ */
+export function autoHideControls(stage, onIdleChange = () => {}) {
   let timer = null;
+  // Starts "idle" so the initial wake() below counts as a real transition and
+  // fires onIdleChange once — otherwise nothing would tell the caller that the
+  // control bar is on screen until the first time it hides and comes back.
+  let idle = true;
+
+  const setIdle = v => {
+    if (v === idle) return;
+    idle = v;
+    stage.classList.toggle('idle', v);
+    onIdleChange(v);
+  };
 
   const wake = () => {
-    stage.classList.remove('idle');
+    setIdle(false);
     clearTimeout(timer);
     timer = setTimeout(() => {
       // Don't hide while a panel is open — the user is clearly still interacting.
       if (stage.querySelector('.panel:not([hidden])')) return;
-      stage.classList.add('idle');
+      setIdle(true);
     }, IDLE_MS);
   };
 

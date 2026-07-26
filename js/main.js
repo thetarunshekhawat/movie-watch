@@ -8,7 +8,7 @@
 import { connect, selfId } from './net.js';
 import { createSync } from './sync.js';
 import { preflight, fingerprint, attach, remuxCommand, formatTime } from './player.js';
-import { loadSubtitles, toggleSubtitles, styleSubtitles, hasSubtitles } from './subs.js';
+import { loadSubtitles, toggleSubtitles, styleSubtitles, setSubLift, hasSubtitles } from './subs.js';
 import { startCall } from './call.js';
 import { createChat } from './chat.js';
 import {
@@ -203,6 +203,23 @@ async function start(roomCode) {
   let duck = null;
   const pendingStreams = [];
 
+  /**
+   * peerId → their last reported {mic, cam}.
+   *
+   * Kept here rather than in call.js because an `av` can arrive before that
+   * person's tile exists at all — their state message routinely beats their video
+   * stream, and the tile is only created when the stream lands.
+   */
+  const peerAv = new Map();
+
+  const applyAv = id => { if (peerAv.has(id)) call?.setPeerAv(id, peerAv.get(id)); };
+
+  /** Tell the room whether our mic and camera are on, so our tile reads right. */
+  const shareAv = target => {
+    if (!call || call.off || call.error) return;
+    net.sendAv({ mic: call.micOn, cam: call.camOn }, target);
+  };
+
   const listNames = names =>
     names.length <= 1 ? (names[0] ?? '')
       : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
@@ -309,12 +326,22 @@ async function start(roomCode) {
     // every peer saw only themselves.
     if (call?.stream) net.addStream(call.stream, id);
 
+    // And tell them whether that camera and mic are currently muted, so their
+    // copy of our tile starts out correct rather than assuming "both on".
+    shareAv(id);
+
     // Bring them to our current position immediately.
     sync.forceResync();
   };
 
+  net.onAv = (state, from) => {
+    peerAv.set(from, state);
+    applyAv(from);
+  };
+
   net.onPeerLeave = id => {
     const who = net.name(id);
+    peerAv.delete(id);
     call?.detachPeer(id);
     chat.system(`${who} left.`);
     renderRoster();
@@ -326,8 +353,10 @@ async function start(roomCode) {
     call.attachPeer(from, stream);
     // Label it immediately. The tile is only created here, so a `meta` that
     // arrived FIRST set the name on a tile that did not exist yet and was lost —
-    // which is exactly how every tile ended up blank.
+    // which is exactly how every tile ended up blank. Their mute state has the
+    // same ordering problem, hence the replay.
     call.setPeerName(from, net.name(from));
+    applyAv(from);
   };
 
   // Wired here, before the await, for the reason documented at the top of this
@@ -387,6 +416,7 @@ async function start(roomCode) {
     const [from, stream] = pendingStreams.shift();
     call.attachPeer(from, stream);
     call.setPeerName(from, net.name(from));
+    applyAv(from);
   }
 
   renderRoster();
@@ -444,11 +474,13 @@ async function start(roomCode) {
   $('micBtn').addEventListener('click', e => {
     const on = call.toggleMic();
     e.currentTarget.classList.toggle('off', !on);
+    shareAv();
   });
 
   $('camBtn').addEventListener('click', e => {
     const on = call.toggleCam();
     e.currentTarget.classList.toggle('off', !on);
+    shareAv();
   });
 
   $('duckBtn').addEventListener('click', e => {
@@ -523,6 +555,26 @@ async function start(roomCode) {
   );
   applySubStyle();
 
+  // ── video tile appearance ──
+  // Both are written as custom properties on the stage, so one write covers your
+  // own tile and everybody else's, including tiles that do not exist yet.
+  const tileOpacity = $('tileOpacity');
+  const tileSize = $('tileSize');
+
+  tileOpacity.value = localStorage.getItem('mw:tileOpacity') ?? '1';
+  tileSize.value = localStorage.getItem('mw:tileSize') ?? '200';
+
+  const applyTileStyle = () => {
+    stage.style.setProperty('--tile-opacity', tileOpacity.value);
+    stage.style.setProperty('--tile-size', tileSize.value + 'px');
+  };
+  [tileOpacity, tileSize].forEach(el => el.addEventListener('input', () => {
+    localStorage.setItem('mw:tileOpacity', tileOpacity.value);
+    localStorage.setItem('mw:tileSize', tileSize.value);
+    applyTileStyle();
+  }));
+  applyTileStyle();
+
   // ── diagnostics ──
   setInterval(async () => {
     $('diagRtt').textContent = net.rttMs != null ? `${net.rttMs} ms` : '—';
@@ -596,7 +648,9 @@ async function start(roomCode) {
   }
 
   bindPanelCloses(stage);
-  autoHideControls(stage);
+  // Subtitles ride up out from under the control bar while it is on screen, and
+  // drop back to the user's chosen height once it hides again.
+  autoHideControls(stage, idle => setSubLift(video, !idle));
 
   banner(banners, {
     id: 'hello', kind: 'info',

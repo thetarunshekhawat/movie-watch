@@ -8,6 +8,44 @@
  */
 
 /**
+ * How far up the cues move, in percent of video height, while the control bar is
+ * on screen. Roughly the height of the bar plus a little breathing room.
+ */
+const LIFT = 12;
+
+/** The user's chosen height, and whether the controls are currently covering it. */
+let subPos = 8;
+let lifted = false;
+
+/**
+ * Write the current line position onto every cue.
+ *
+ * Cue position is a property of the cue objects, not something `::cue` can style,
+ * so it has to be reapplied whenever it changes AND whenever new cues load.
+ */
+function applyLine(video) {
+  const tt = video.textTracks[0];
+  if (!tt?.cues) return;
+  const line = 100 - Math.min(subPos + (lifted ? LIFT : 0), 92);
+  for (const cue of tt.cues) {
+    cue.snapToLines = false;
+    cue.line = line;
+  }
+}
+
+/**
+ * Lift the subtitles clear of the control bar while it is visible.
+ *
+ * Called from the auto-hide logic in ui.js. The cues jump rather than glide —
+ * WebVTT cue positions are not animatable — but the distance is small.
+ */
+export function setSubLift(video, on) {
+  if (on === lifted) return;
+  lifted = on;
+  applyLine(video);
+}
+
+/**
  * Convert SRT to WebVTT.
  *
  * The differences that matter in practice are the header, the comma decimal
@@ -59,7 +97,14 @@ export async function loadSubtitles(video, file) {
   // The track element needs a tick before video.textTracks reflects it.
   await new Promise(r => setTimeout(r, 0));
   const tt = video.textTracks[video.textTracks.length - 1];
-  if (tt) tt.mode = 'showing';
+  if (tt) {
+    tt.mode = 'showing';
+    // Cues are parsed asynchronously after the blob is fetched, so the position
+    // applied right now would land on an empty cue list. Reapply as they arrive.
+    track.addEventListener('load', () => applyLine(video));
+    tt.addEventListener('cuechange', () => applyLine(video));
+    applyLine(video);
+  }
   return tt || null;
 }
 
@@ -94,12 +139,7 @@ export function styleSubtitles(video, { size, bg, pos }) {
   if (bg != null) video.style.setProperty('--sub-bg', bg);
 
   if (pos != null) {
-    const tt = video.textTracks[0];
-    if (tt?.cues) {
-      for (const cue of tt.cues) {
-        cue.snapToLines = false;
-        cue.line = 100 - pos;   // percentage from the top
-      }
-    }
+    subPos = pos;
+    applyLine(video);
   }
 }

@@ -239,9 +239,24 @@ input  { font: inherit; }
 @keyframes drop { from { opacity: 0; transform: translateY(-10px); } }
 
 /* ── Webcam tiles ── */
+
+/* A full-stage layer, so a peer tile's offset parent is the whole stage and it
+   can be dragged anywhere in it. This div used to be an unstyled block of zero
+   height, which silently clamped every peer tile to the top edge — they could
+   only be moved sideways. `pointer-events: none` keeps the layer from swallowing
+   clicks meant for the control bar; the tiles themselves opt back in. */
+#peerTiles {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
 .tile {
   position: absolute;
-  width: 200px;
+  /* --tile-w is a per-tile override written by the resize handle; --tile-size is
+     the global slider in Settings. */
+  width: var(--tile-w, var(--tile-size, 200px));
   aspect-ratio: 4 / 3;
   border-radius: var(--radius);
   overflow: hidden;
@@ -251,12 +266,19 @@ input  { font: inherit; }
   cursor: grab;
   z-index: 30;
   user-select: none;
+  pointer-events: auto;
+  opacity: var(--tile-opacity, 1);
+  transition: opacity .2s, border-color .15s, box-shadow .15s;
 }
+/* Fade is for tiles you are not paying attention to. Anything that means "look
+   at me" — talking, hovering, being dragged — overrides it. */
+.tile:hover,
+.tile.speaking,
+.tile.dragging { opacity: 1; }
 .tile.dragging { cursor: grabbing; border-color: var(--accent-2); }
 .tile.speaking { border-color: var(--good); box-shadow: 0 0 0 3px rgba(74,222,128,.28), var(--shadow); }
 .tile video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .tile[data-tile=self] video { transform: scaleX(-1); }  /* mirror your own view */
-.tile[data-tile=self] { width: 150px; }
 .tile.cam-off video { visibility: hidden; }
 .tile.cam-off::after {
   content: "📷";
@@ -277,10 +299,15 @@ input  { font: inherit; }
   font-size: 11px;
   pointer-events: none;
 }
-.tile-muted {
+/* Mic/camera state. Deliberately quiet — it should read at a glance without
+   competing with the video. */
+.tile-badges {
   position: absolute;
   top: 6px; right: 8px;
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 1;
+  opacity: .65;
+  text-shadow: 0 1px 3px rgba(0,0,0,.9);
   pointer-events: none;
 }
 .tile-resize {
@@ -405,6 +432,14 @@ input  { font: inherit; }
   transition: background .15s;
 }
 .ctl:hover { background: rgba(255,255,255,.16); }
+/* The subtitles button. A text "CC" so it can't be mistaken for the 💬 chat
+   button, which is exactly what happened when both were 💬. */
+.ctl.cc {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  padding: 10px 9px;
+}
 .ctl.active { background: rgba(78,205,196,.22); border-color: rgba(78,205,196,.5); }
 .ctl.off    { opacity: .45; }
 /* synced controls get a subtle link marker */

@@ -2,7 +2,7 @@
  * net.js — Trystero transport.
  *
  * Wraps Trystero so the rest of the app never touches WebRTC directly. Provides:
- *   • the six actions documented in PROJECT.md (ctrl / beat / stall / chat / react / meta)
+ *   • the actions documented in PROJECT.md (ctrl / beat / stall / chat / react / meta / av)
  *   • a round-trip-time probe, since sync compensation needs a one-way latency estimate
  *   • peer lifecycle events
  *
@@ -89,6 +89,9 @@ export function connect(roomCode) {
   const chat  = room.makeAction('chat');
   const react = room.makeAction('react');
   const meta  = room.makeAction('meta');
+  // Mic/camera state, so a tile can show that its person is muted. Purely
+  // cosmetic — nothing in sync or playback depends on it.
+  const av    = room.makeAction('av');
 
   // Request-kind action: the peer echoes back whatever we send, letting us time it.
   const ping = room.makeAction('ping', {
@@ -243,6 +246,8 @@ export function connect(roomCode) {
     sendChat:  d => chat.send(d),
     sendReact: d => react.send(d),
     sendMeta:  (d, target) => meta.send(d, target ? { target } : undefined),
+    // Targeted on join (so a newcomer sees correct badges), broadcast on toggle.
+    sendAv:    (d, target) => av.send(d, target ? { target } : undefined),
 
     // ── receivers, assigned by main.js. All get (data, senderPeerId). ──
     onCtrl:     () => {},
@@ -251,6 +256,7 @@ export function connect(roomCode) {
     onChat:     () => {},
     onReact:    () => {},
     onMeta:     () => {},
+    onAv:       () => {},
     onPeerJoin: () => {},
     onPeerLeave:() => {},
     onStream:   () => {},
@@ -311,6 +317,7 @@ export function connect(roomCode) {
   stall.onMessage = (d, { peerId: from }) => net.onStall(d, from);
   chat.onMessage  = (d, { peerId: from }) => net.onChat(d, from);
   react.onMessage = (d, { peerId: from }) => net.onReact(d, from);
+  av.onMessage    = (d, { peerId: from }) => net.onAv(d, from);
 
   // Meta doubles as the roster feed: it is how we learn names and join times, and
   // therefore how the host is decided.

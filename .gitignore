@@ -1,6 +1,9 @@
 # Browser-automation tool output
 .gstack/
 
+# Agent worktrees — these are full checkouts of this repo, not source
+.claude/
+
 # Movie and subtitle files — never commit these
 *.mp4
 *.mkv

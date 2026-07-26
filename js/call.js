@@ -13,6 +13,16 @@
 const DUCK_KEY = 'mw:autoduck';
 const TILE_KEY = 'mw:tiles';
 
+/**
+ * Watch key for our own stream.
+ *
+ * Our own voice is analysed exactly like everyone else's so that our own tile
+ * gets the speaking outline — without it you can never tell whether your mic is
+ * actually picking you up. It is flagged `selfOnly` so it does NOT duck the
+ * movie: dipping the audio every time you speak would be maddening.
+ */
+const SELF = '__self__';
+
 /** Voice level above which we consider them "speaking". Empirical. */
 const SPEAK_THRESHOLD = 0.045;
 
@@ -32,6 +42,7 @@ const RELEASE_MS = 500;
 export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) {
   let stream = null;
   let error = null;
+  const duck = createDucker();
 
   if (enabled) {
     try {
@@ -47,9 +58,13 @@ export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) 
     }
   }
 
-  placeSelfTile(selfTile);
+  placeTile(selfTile, 'self', { right: 18, top: 18 });
   makeDraggable(selfTile, 'self');
   makeResizable(selfTile, 'self');
+
+  // Analyse our own mic so our own tile lights up while we talk. Excluded from
+  // ducking (see SELF above).
+  if (stream) duck.watch(SELF, stream, selfTile, { selfOnly: true });
 
   /**
    * peerId → tile element. Built on demand rather than declared in the HTML,
@@ -68,15 +83,19 @@ export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) 
     tile.innerHTML =
       '<video autoplay playsinline></video>' +
       '<span class="tile-label"></span>' +
+      '<span class="tile-badges"></span>' +
       '<div class="tile-resize" data-resize="peer"></div>';
     tiles.appendChild(tile);
     peerTiles.set(peerId, tile);
 
-    stackTile(tile, peerTiles.size - 1);
-    // null key = do not persist. Peer ids are regenerated every session, so a
-    // saved position could never be matched back to the same person anyway.
-    makeDraggable(tile, null);
-    makeResizable(tile, null);
+    // Peer ids are regenerated every session, so a saved position can never be
+    // matched back to a person. Key by seat instead — arrival order — which at
+    // least keeps a two-person room's layout stable across reloads.
+    const index = peerTiles.size - 1;
+    const key = `peer${index}`;
+    placeTile(tile, key, { right: 18, top: 150 + index * 170 });
+    makeDraggable(tile, key);
+    makeResizable(tile, key);
     return tile;
   }
 
@@ -111,10 +130,23 @@ export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) 
       if (tile) tile.querySelector('.tile-label').textContent = name;
     },
 
+    /**
+     * Show someone's mic/camera state on their tile.
+     *
+     * A disabled remote track still arrives as a live-but-silent track, so there
+     * is no reliable local way to tell "muted" from "quiet" — the peer has to
+     * tell us, which is what the `av` message is for.
+     */
+    setPeerAv(peerId, state) {
+      const tile = peerTiles.get(peerId);
+      if (tile) setTileAv(tile, state);
+    },
+
     toggleMic() {
       if (!stream) return false;
       call.micOn = !call.micOn;
       stream.getAudioTracks().forEach(t => (t.enabled = call.micOn));
+      setTileAv(selfTile, { mic: call.micOn, cam: call.camOn });
       return call.micOn;
     },
 
@@ -122,7 +154,7 @@ export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) 
       if (!stream) return false;
       call.camOn = !call.camOn;
       stream.getVideoTracks().forEach(t => (t.enabled = call.camOn));
-      selfTile.classList.toggle('cam-off', !call.camOn);
+      setTileAv(selfTile, { mic: call.micOn, cam: call.camOn });
       return call.camOn;
     },
 
@@ -142,8 +174,20 @@ export async function startCall({ selfVideo, selfTile, tiles, enabled = true }) 
     },
   };
 
-  const duck = createDucker();
   return { call, duck };
+}
+
+/**
+ * Render the mic/camera state onto a tile.
+ *
+ * The muted badge is deliberately understated — a small translucent 🔇 in the
+ * corner. Camera-off reuses the existing `.cam-off` styling, which swaps the
+ * frozen last frame for a placeholder.
+ */
+function setTileAv(tile, { mic = true, cam = true } = {}) {
+  const badges = tile.querySelector('.tile-badges');
+  if (badges) badges.textContent = mic ? '' : '🔇';
+  tile.classList.toggle('cam-off', !cam);
 }
 
 /**
@@ -207,7 +251,8 @@ function createDucker() {
         }, RELEASE_MS);
       }
 
-      if (w.speaking) anySpeaking = true;
+      // Our own voice lights up our own tile but must never duck our own movie.
+      if (w.speaking && !w.selfOnly) anySpeaking = true;
     }
 
     // Duck for as long as ANYONE is talking, and only lift when the room is quiet.
@@ -221,13 +266,24 @@ function createDucker() {
 
     set onLevel(fn) { onLevel = fn; },
 
-    watch(peerId, stream, tile) {
+    watch(peerId, stream, tile, { selfOnly = false } = {}) {
       if (!stream.getAudioTracks().length) return;
       this.stop(peerId);
 
       // One shared AudioContext for the whole room — browsers cap how many you may
       // open, and six people would otherwise mean six contexts.
       ctx ||= new (window.AudioContext || window.webkitAudioContext)();
+
+      // Our own stream is watched the moment the camera is granted, which can be
+      // before the user has clicked anything — an AudioContext created then starts
+      // suspended and its analyser reads pure silence, so the speaking indicator
+      // would never fire. Resume now, and again on the first real interaction.
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+        const kick = () => ctx?.resume().catch(() => {});
+        window.addEventListener('pointerdown', kick, { once: true });
+        window.addEventListener('keydown', kick, { once: true });
+      }
 
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
@@ -237,7 +293,7 @@ function createDucker() {
       source.connect(analyser);
 
       watched.set(peerId, {
-        source, analyser, tile,
+        source, analyser, tile, selfOnly,
         data: new Uint8Array(analyser.fftSize),
         speaking: false, releaseTimer: null,
       });
@@ -293,25 +349,24 @@ function saveTile(key, patch) {
   localStorage.setItem(TILE_KEY, JSON.stringify(all));
 }
 
-/** Your own tile sits bottom-right of the stack, out of the way. */
-function placeSelfTile(selfTile) {
-  const s = { right: 18, top: 18, width: 150, ...savedTiles().self };
-  if (s.left != null) { selfTile.style.left = s.left + 'px'; selfTile.style.right = 'auto'; }
-  else { selfTile.style.right = (s.right ?? 18) + 'px'; }
-  selfTile.style.top = (s.top ?? 18) + 'px';
-  selfTile.style.width = (s.width ?? 150) + 'px';
-}
-
 /**
- * Default position for the Nth peer tile: stacked down the right edge, below your
- * own. Peer ids are regenerated every session, so saved positions cannot be keyed
- * to a person — stacking by arrival order is the only stable default. Drag one and
- * it stays put for the session.
+ * Position a tile: saved placement if we have one, otherwise the given default.
+ *
+ * Width is written as the `--tile-w` custom property rather than `width`, so a
+ * hand-resized tile keeps its own size while every untouched tile follows the
+ * global tile-size slider (see `--tile-size` in style.css).
  */
-function stackTile(tile, index) {
-  tile.style.right = '18px';
-  tile.style.top = (150 + index * 170) + 'px';
-  tile.style.width = '200px';
+function placeTile(tile, key, fallback) {
+  const s = { ...fallback, ...(key ? savedTiles()[key] : null) };
+  if (s.left != null) {
+    tile.style.left = s.left + 'px';
+    tile.style.right = 'auto';
+  } else {
+    tile.style.left = 'auto';
+    tile.style.right = (s.right ?? 18) + 'px';
+  }
+  tile.style.top = (s.top ?? 18) + 'px';
+  if (s.width != null) tile.style.setProperty('--tile-w', s.width + 'px');
 }
 
 function makeDraggable(tile, key) {
@@ -332,7 +387,13 @@ function makeDraggable(tile, key) {
 
   tile.addEventListener('pointermove', e => {
     if (!dragging) return;
-    const parent = tile.parentElement.getBoundingClientRect();
+    // Clamp against the OFFSET parent — the box these absolute coordinates are
+    // actually relative to — not `parentElement`. Peer tiles live in a wrapper
+    // div; before it was made a full-stage layer that div had zero height, so
+    // `clamp(top, 0, 0 - h)` collapsed to 0 and every peer tile was pinned to the
+    // top edge, movable sideways only. Using offsetParent makes the two tile
+    // kinds behave identically no matter how they are nested.
+    const parent = (tile.offsetParent || tile.parentElement).getBoundingClientRect();
     const w = tile.offsetWidth, h = tile.offsetHeight;
     const left = clamp(originLeft + (e.clientX - startX) - parent.left, 0, parent.width - w);
     const top = clamp(originTop + (e.clientY - startY) - parent.top, 0, parent.height - h);
@@ -370,14 +431,15 @@ function makeResizable(tile, key) {
 
   handle.addEventListener('pointermove', e => {
     if (!resizing) return;
-    tile.style.width = clamp(startW + (e.clientX - startX), 110, 460) + 'px';
+    // Per-tile override of the global size slider.
+    tile.style.setProperty('--tile-w', clamp(startW + (e.clientX - startX), 110, 460) + 'px');
   });
 
   const end = e => {
     if (!resizing) return;
     resizing = false;
     try { handle.releasePointerCapture(e.pointerId); } catch {}
-    if (key) saveTile(key, { width: parseFloat(tile.style.width) });
+    if (key) saveTile(key, { width: parseFloat(tile.style.getPropertyValue('--tile-w')) });
   };
   handle.addEventListener('pointerup', end);
   handle.addEventListener('pointercancel', end);

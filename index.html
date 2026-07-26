@@ -90,6 +90,7 @@
   <div class="tile" id="selfTile" data-tile="self" hidden>
     <video id="selfVideo" autoplay playsinline muted></video>
     <span class="tile-label">You</span>
+    <span class="tile-badges"></span>
     <div class="tile-resize" data-resize="self"></div>
   </div>
 
@@ -139,7 +140,9 @@
 
       <span class="divider"></span>
 
-      <button id="subsBtn" class="ctl" title="Subtitles — only yours (C)">💬</button>
+      <!-- "CC", not 💬 — chat is the 💬 button and two identical icons is a
+           coin-toss every time you reach for one. -->
+      <button id="subsBtn" class="ctl cc" title="Subtitles — only yours (C)">CC</button>
       <button id="settingsBtn" class="ctl" title="Subtitles &amp; sync settings">⚙</button>
       <button id="rosterBtn" class="ctl" title="Who's in the room">
         👥<span class="badge count" id="rosterCount">1</span>
@@ -219,6 +222,25 @@
       </label>
 
       <hr>
+
+      <!-- Camera-only: with no tiles on screen these sliders control nothing. -->
+      <div data-needs-camera>
+        <h4>Video tiles <span class="hint">only you</span></h4>
+        <p class="hint">
+          Faded tiles come back to full strength while that person is speaking, and
+          whenever you hover over them.
+        </p>
+        <label class="field-inline">
+          <span>Fade</span>
+          <input type="range" id="tileOpacity" min="0.15" max="1" step="0.05" value="1">
+        </label>
+        <label class="field-inline">
+          <span>Size</span>
+          <input type="range" id="tileSize" min="110" max="460" step="10" value="200">
+        </label>
+
+        <hr>
+      </div>
 
       <h4>Diagnostics</h4>
       <dl class="diag">
