@@ -580,9 +580,13 @@ Read the Settings (⚙) rows to tell the cases apart:
 1. **Add a TURN server. This is now the blocker, not a contingency.** The 2026-07-27 measurement
    (see **Known issues**) showed the joining network cannot hold a direct path: per-flow WAN load
    balancing plus address-and-port-dependent filtering. No amount of retrying fixes that; only a
-   relay does. Metered (metered.ca) gives 50GB/month free with no card and hands back exactly the
-   shape the commented-out block in `net.js` expects. Paste the credentials into `TURN`, then
-   confirm the Settings **Path** row reads `relay/…` on the pair that used to fail.
+   relay does. Metered's Open Relay (metered.ca) gives **20GB/month** free — the "50GB, no card"
+   figure previously recorded here was wrong, and their published hostnames have changed too, so
+   fetch your own values from
+   `https://<yourapp>.metered.live/api/v1/turn/credentials?apiKey=<KEY>` and paste those verbatim
+   rather than trusting the placeholder hostnames in the `net.js` comment. Then confirm the
+   Settings **Path** row reads `relay/…` on the pair that used to fail. Note the credentials are
+   public in a static site; that is unavoidable without a backend.
 2. **Stop reporting connection failure as "Room doesn't exist".** `joinExisting()` should
    distinguish "no announce ever seen" from "found them, could not connect". The cheapest honest
    split: keep waiting for `net.peerCount`, but if `room.getPeers()` has entries whose

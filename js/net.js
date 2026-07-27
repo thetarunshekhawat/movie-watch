@@ -30,16 +30,33 @@ const APP_ID = 'movie-watch-p2p-v1';
  * Leaving a dead server in here is worse than leaving it empty: ICE gathering
  * waits on it before giving up, and it fills the console with noise.
  *
+ * THIS IS NOW THE BLOCKER, not a nice-to-have. Measured 2026-07-27: a real
+ * cross-network pair could not connect, because one side's network hands out a
+ * different public IP per flow and filters on address+port. Without a relay
+ * that pair can never connect, and the app reports it as "Room doesn't exist".
+ * See PROJECT.md → Known issues.
+ *
  * TO ENABLE: sign up for a free TURN provider and paste the credentials below.
- * Metered (metered.ca) gives 50GB/month free with no card and hands you exactly
- * this shape. Trystero's default STUN servers are still used either way.
+ * Metered's Open Relay (metered.ca) gives 20GB/month free. Trystero's default
+ * STUN servers are still used either way.
+ *
+ * Do NOT trust the hostnames below — they are illustrative and Metered has
+ * changed them before. Fetch YOUR actual values first and paste those verbatim:
+ *
+ *   curl 'https://<yourapp>.metered.live/api/v1/turn/credentials?apiKey=<KEY>'
+ *
+ * That returns the iceServers array directly; drop the stun: entries (Trystero
+ * supplies its own) and keep the turn:/turns: ones in this shape:
  *
  *   const TURN = [{
- *     urls: ['turn:<your-subdomain>.metered.live:80',
- *            'turn:<your-subdomain>.metered.live:443?transport=tcp'],
+ *     urls: ['turn:<host>:80', 'turn:<host>:443?transport=tcp'],
  *     username: '<your-username>',
  *     credential: '<your-credential>',
  *   }];
+ *
+ * These credentials ship in a public repo and are readable by anyone who views
+ * source. That is unavoidable for a static site with no backend; treat the 20GB
+ * as burnable and rotate the credential if it drains.
  */
 const TURN = [];
 
