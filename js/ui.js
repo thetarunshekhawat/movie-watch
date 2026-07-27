@@ -106,7 +106,7 @@ export function banner(host, { id, kind = 'info', title, body, code, action, sti
 
   const close = document.createElement('button');
   close.className = 'banner-x';
-  close.textContent = '✕';
+  close.textContent = '×';
   close.addEventListener('click', () => el.remove());
   el.appendChild(close);
 
