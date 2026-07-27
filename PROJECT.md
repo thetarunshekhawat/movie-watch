@@ -665,7 +665,8 @@ question the last three entries left open.
 address-and-port-dependent (RFC 5780 test: replies from a different IP, and from a different port,
 were both dropped). A peer therefore cannot reach the address the joiner advertises, and the
 joiner's own checks arrive from an address the peer never expected. ICE cannot close that loop
-without a relay, and `TURN` in `net.js` is empty.
+without a relay, and `TURN` in `net.js` was empty at the time of this measurement. *(Fixed later
+the same day — see the entry above.)*
 
 **What it is not.** Ruled out, so nobody re-treads them: the five Nostr relays this `appId` derives
 were each verified to forward ephemeral events end to end; their TLS certificates are all valid
