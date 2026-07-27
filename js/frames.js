@@ -60,7 +60,7 @@ export const CONFIG = {
   DWELL_MS: 2400,
   MOVE_MS: 1600,
   FADE_BAND: 1.0,   // units of t over which a frame fades out at the cull edge
-  LABEL_RADIUS: 2,  // only label frames this close to the corner
+  TITLE_MIN_W: 128, // below this the plate is too small to hold a title
   DPR_CAP: 1.5,
   PIXEL_BUDGET: 4e6,
   GRADE: 'grayscale(1) contrast(.92) brightness(.85)',
@@ -174,6 +174,10 @@ async function loadSlot(slot) {
   try {
     const img = new Image();
     img.decoding = 'async';
+    // Needed when `src` points at a remote CDN (the TMDB `--urls` route).
+    // Harmless for same-origin files. Without it the mip canvas is tainted —
+    // which does not break drawImage, but would break any future pixel read.
+    if (/^https?:/i.test(slot.src)) img.crossOrigin = 'anonymous';
     img.src = slot.src;
     await img.decode();
     slot.img = img;
@@ -236,48 +240,65 @@ function drawPlate(slot, x, y, w, h, alpha, t) {
   }
   ctx.stroke();
 
-  // 5. label, only near the corner
-  if (Math.abs(t) <= CONFIG.LABEL_RADIUS) drawLabel(slot, x + w, y, alpha, t);
+  // 5. the title, printed ON the still in its top-left corner. Someone who has
+  //    not seen the film still has to be able to tell what they are looking at,
+  //    and a caption floating outside the plate stops reading as belonging to
+  //    it once the frames are stacked edge to edge.
+  if (w >= CONFIG.TITLE_MIN_W) drawTitle(slot, x, y, w, h, alpha, t);
 
   ctx.globalAlpha = 1;
 }
 
-function drawLabel(slot, x, y, alpha, t) {
-  const pad = 0.9 * rem();
-  const size = Math.max(10, 0.8125 * rem());
-  const near = Math.abs(t) < 0.5;
-  const lx = x + pad;
+/**
+ * Title block, top-left, over a diagonal scrim.
+ *
+ * The scrim is a linear gradient run along the corner diagonal, which paints
+ * as a soft triangular wedge — dark where the text sits, gone by the middle of
+ * the frame, so it never reads as a bar laid across the picture. Without it the
+ * title is unreadable the moment a still happens to be bright in that corner,
+ * and we cannot know in advance which ones are.
+ */
+function drawTitle(slot, x, y, w, h, alpha, t) {
+  const near = Math.abs(t) < 0.75;
+  const size = Math.max(9, w * 0.052);
+  const pad = size * 0.85;
+
+  // Diagonal wedge. Reaches ~62% across and down at full size.
+  const g = ctx.createLinearGradient(x, y, x + w * 0.62, y + h * 0.62);
+  g.addColorStop(0, 'rgba(0,0,0,.9)');
+  g.addColorStop(0.45, 'rgba(0,0,0,.42)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.globalAlpha = alpha * (near ? 1 : 0.75);
+  ctx.fillStyle = g;
+  ctx.fillRect(x, y, w, h);
 
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
 
-  // numeral, then a short rule, then the title in italic
-  ctx.globalAlpha = alpha * (near ? 1 : 0.45);
-  ctx.font = `${size}px ${fontStack()}`;
+  // Title in italic — the house style throughout the app.
+  ctx.globalAlpha = alpha * (near ? 1 : 0.8);
   ctx.fillStyle = '#fff';
-  const num = roman(slot.index);
-  ctx.fillText(num, lx, y);
+  ctx.font = `italic ${size}px ${fontStack()}`;
+  ctx.fillText(fitText(slot.title, w - pad * 2), x + pad, y + pad);
 
-  const numW = ctx.measureText(num).width;
-  const ruleX = lx + numW + pad * 0.6;
-  const ruleW = size * 1.4;
-  ctx.strokeStyle = 'rgba(255,255,255,.5)';
-  ctx.lineWidth = 1 / dpr;
-  ctx.beginPath();
-  ctx.moveTo(ruleX, hair(y + size * 0.62));
-  ctx.lineTo(ruleX + ruleW, hair(y + size * 0.62));
-  ctx.stroke();
-
-  ctx.font = `italic ${size * 1.15}px ${fontStack()}`;
-  ctx.fillText(`“${slot.title}”`, ruleX + ruleW + pad * 0.6, y - size * 0.1);
-
-  // second line: director and year, muted
-  ctx.globalAlpha = alpha * (near ? 0.55 : 0.3);
-  ctx.font = `${size * 0.88}px ${fontStack()}`;
-  const sub = [slot.director, slot.year].filter(Boolean).join('  ·  ');
-  if (sub) ctx.fillText(sub, lx, y + size * 1.7);
+  // Year and roman numeral beneath, letterspaced small — enough to place the
+  // film in time without turning the corner into a caption block.
+  if (w >= CONFIG.TITLE_MIN_W * 1.45) {
+    ctx.globalAlpha = alpha * (near ? 0.62 : 0.4);
+    ctx.font = `${size * 0.72}px ${fontStack()}`;
+    const sub = [roman(slot.index), slot.year].filter(Boolean).join('   ');
+    ctx.fillText(sub, x + pad, y + pad + size * 1.35);
+  }
 
   ctx.globalAlpha = alpha;
+}
+
+/** Ellipsise to fit, so a long title never runs out of its own frame. */
+function fitText(text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let s = text;
+  while (s.length > 1 && ctx.measureText(s + '…').width > maxW) s = s.slice(0, -1);
+  return s.trimEnd() + '…';
 }
 
 const rem = () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
@@ -326,7 +347,7 @@ function draw() {
     if (mean > 10 && degraded < 2) {
       degraded++;
       if (degraded === 1) { dpr = 1; resize(true); }
-      else { CONFIG.DWELL_MS = 3600; CONFIG.LABEL_RADIUS = 1; }
+      else { CONFIG.DWELL_MS = 3600; CONFIG.TITLE_MIN_W = 200; }
       drawMs = [];
     }
   }
@@ -444,7 +465,7 @@ function build() {
 
   // Repeat the list up to SLOTS_MIN so the wrap seam always lands outside the
   // cull radius. A repeat sits 6 slots away at ~14% size — reads as rhythm.
-  const src = FRAMES.length ? FRAMES : [{ title: 'Untitled' }];
+  const src = interleave(FRAMES.length ? FRAMES : [{ title: 'Untitled' }]);
   N = Math.max(CONFIG.SLOTS_MIN, src.length);
   slots = Array.from({ length: N }, (_, i) => {
     const f = src[i % src.length];
@@ -454,6 +475,32 @@ function build() {
     };
   });
   return true;
+}
+
+/**
+ * Round-robin the manifest by film, so the four or five stills from one film
+ * never sit next to each other.
+ *
+ * The manifest is authored film by film, which is how a human wants to edit
+ * it — but the stack shows nine frames at once, so in source order a third of
+ * the screen would be the same movie. Round-robin guarantees neighbours differ
+ * while staying fully deterministic (no shuffle, so the composition is the
+ * same on every load and the layout stays debuggable).
+ */
+function interleave(list) {
+  const byFilm = new Map();
+  for (const e of list) {
+    if (!byFilm.has(e.title)) byFilm.set(e.title, []);
+    byFilm.get(e.title).push(e);
+  }
+  const groups = [...byFilm.values()];
+  const out = [];
+  for (let i = 0; out.length < list.length; i++) {
+    let added = false;
+    for (const g of groups) if (g[i]) { out.push(g[i]); added = true; }
+    if (!added) break;
+  }
+  return out;
 }
 
 async function boot() {

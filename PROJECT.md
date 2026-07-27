@@ -38,7 +38,8 @@ window on its own machine.
 |---|---|---|
 | Project docs | `PROJECT.md`, `CLAUDE.md` | ✅ Done |
 | HTML/CSS shell | `index.html`, `css/style.css` | ✅ Done — rebuilt in the depoluxe.xyz visual language (EB Garamond, monochrome, square, hairline rules) |
-| Ambient frame stack | `js/frames.js`, `js/frames-data.js` | ✅ Done — canvas corner stack on the landing screen and in the waiting room. **Placeholder slates only; real stills not supplied yet** |
+| Ambient frame stack | `js/frames.js`, `js/frames-data.js` | ✅ Done — canvas corner stack, title printed on each frame, 26 films / ~110 slots, interleaved. **Images not supplied yet; every slot draws as a slate until `img/frames/` is populated** |
+| Still-population tooling | `tools/fetch-stills.mjs`, `tools/grab-frames.sh` | ✅ Done — TMDB fetch and ffmpeg local extraction. Neither has been run against a real key or a real film file |
 | Typeface | `fonts/` | ✅ Done — EB Garamond self-hosted, 4 subsetted woff2 + OFL |
 | Networking | `js/net.js` | ✅ Done — verified over real Nostr relays |
 | Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified, plus a host-only control lock |
@@ -344,6 +345,47 @@ universal convention exists (transport, mic, camera, duck, gear, fullscreen); a 
 where none does (`CC`, `ROOM`, `CHAT`); and emoji left alone for the reaction button, because the
 thing it produces *is* an emoji. Every button keeps its `title` and gains an `aria-label`, so the
 accessible name stays a full sentence even where the visible label is three letters.
+
+
+### Film stills are NOT committed to this repository
+
+*Because this repo is public and deploys to a public GitHub Pages site, and film frames are
+studio copyright.* Committing ~110 of them would be redistribution from a public server, whatever
+the intent. `img/frames/` is gitignored and the manifest ships with `src` paths that may point at
+nothing.
+
+Two supported ways to fill it, both writing to the paths the manifest already expects:
+
+- **`tools/grab-frames.sh`** — ffmpeg one-frame extraction from your own copy of a film. Better
+  looking, because you choose the exact moment instead of taking whatever went in a press kit, and
+  the frames never leave the machine.
+- **`tools/fetch-stills.mjs`** — TMDB, which licenses stills for this use. Downloads by default;
+  `--urls` hot-links their CDN so nothing is stored at all. Requires the attribution line in
+  README.md.
+
+Both are one-off tools run by hand with zero npm dependencies, so the no-build-step rule still
+holds for the app itself.
+
+The consequence worth knowing: a missing still is a **404 in the console**. That is expected and
+harmless — the engine catches it and draws a slate — but it does mean the console is not clean
+until the images are in place.
+
+### The title is printed ON each still, not beside it
+
+*Because a caption floating outside the plate stops reading as belonging to it once the frames are
+packed edge to edge*, and because someone who has not seen the film still has to be able to tell
+what they are looking at. It sits in the top-left over a linear gradient run along the corner
+diagonal, which paints as a soft triangular wedge — dark under the text, gone by the middle of the
+frame, so it never reads as a bar laid across the picture. The wedge is not decoration: stills
+arrive with unknown luminance and a bright corner would otherwise swallow the title entirely.
+
+### The manifest is interleaved by film, not played in source order
+
+*Because the stack shows about nine frames at once and each film contributes four or five.* In
+source order a third of the screen would be the same movie. The engine round-robins by title on
+load, so neighbouring frames are always from different films. It is a deterministic rotation
+rather than a shuffle, so the composition is identical on every load and the layout stays
+debuggable.
 
 
 ## Message protocol
@@ -654,11 +696,17 @@ Read the Settings (⚙) rows to tell the cases apart:
 
 ---
 
-**The ambient stack ships with placeholder slates, not real stills.**
-`js/frames-data.js` carries twelve film titles and no images — every frame draws as a numbered
-slate with crop marks. That is a deliberate designed state rather than a broken one, but it is
-not the finished look. Drop landscape images into `img/frames/` and set `src` on each entry; the
-composition does not move when they arrive.
+**The ambient stack ships with no images.**
+`js/frames-data.js` lists 26 films and ~110 still slots; `img/frames/` is empty and gitignored, so
+every frame currently draws as a slate carrying the film's title. That is a deliberate designed
+state rather than a broken one, but it is not the finished look, and **each missing still logs a
+404**. Populate with `tools/grab-frames.sh` or `tools/fetch-stills.mjs`. The composition does not
+move when the images arrive.
+
+**Neither population tool has been run end to end.** `fetch-stills.mjs` has not been exercised
+against a real TMDB key, and `grab-frames.sh` has not been run against a real film file. Both are
+syntax-checked only. Expect to debug them on first use — in particular TMDB's search can return
+the wrong film for a remake or a re-release, so check what lands before trusting it.
 
 **Fullscreen overlay behaviour is still unverified, and now has one more thing riding on it.**
 The ambient layer was deliberately made a re-parented descendant of `#stage` (rather than
@@ -702,6 +750,25 @@ observed. Headless Chromium is not a useful test for this.
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-27 — titles on the frames, 26 films, and tooling to populate them
+
+- **The film title is now printed on each still**, top-left, over a diagonal gradient wedge, with
+  the roman numeral and year beneath it. Replaces the caption that used to float outside the
+  plate. Long titles ellipsise to their own frame; frames narrower than 128px skip the title.
+- **Manifest expanded to 26 films / ~110 stills**, authored as a compact `FILMS` array that
+  expands to one entry per still.
+- **Frames are interleaved by film on load**, so the four or five stills from one film never sit
+  next to each other in the stack.
+- **`tools/grab-frames.sh`** — pull stills out of your own copy of a film with ffmpeg.
+- **`tools/fetch-stills.mjs`** — pull them from TMDB instead; `--urls` hot-links rather than
+  downloads. Zero npm dependencies.
+- `img/frames/` gitignored; cross-origin images now request CORS so the `--urls` route does not
+  taint the mip canvases.
+
+Verified with synthetic stand-ins for all 26 films: load → mipmap → grade → draw → title overlay,
+titles legible over both dark and near-white frames, interleaving confirmed on screen. **Not**
+verified: either population tool against real inputs.
 
 ### 2026-07-27 — the interface rebuilt in the depoluxe.xyz language, with an ambient frame stack
 
