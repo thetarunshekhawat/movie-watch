@@ -38,8 +38,8 @@ window on its own machine.
 |---|---|---|
 | Project docs | `PROJECT.md`, `CLAUDE.md` | ✅ Done |
 | HTML/CSS shell | `index.html`, `css/style.css` | ✅ Done — rebuilt in the depoluxe.xyz visual language (EB Garamond, monochrome, square, hairline rules) |
-| Ambient frame stack | `js/frames.js`, `js/frames-data.js` | ✅ Done — canvas corner stack, title printed on each frame, 26 films / ~110 slots, interleaved. **Images not supplied yet; every slot draws as a slate until `img/frames/` is populated** |
-| Still-population tooling | `tools/fetch-stills.mjs`, `tools/grab-frames.sh` | ✅ Done — TMDB fetch and ffmpeg local extraction. Neither has been run against a real key or a real film file |
+| Ambient frame stack | `js/frames.js`, `js/frames-data.js`, `js/frames-urls.js` | ✅ Done — canvas corner stack, title printed on each frame, 26 films / 109 stills served from TMDB's CDN |
+| Still-population tooling | `tools/fetch-stills.mjs`, `tools/grab-frames.sh` | ✅ Done — TMDB fetch verified end to end against a real key; all 26 films resolved correctly. `grab-frames.sh` still unrun against a real film file |
 | Typeface | `fonts/` | ✅ Done — EB Garamond self-hosted, 4 subsetted woff2 + OFL |
 | Networking | `js/net.js` | ✅ Done — verified over real Nostr relays |
 | Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified, plus a host-only control lock |
@@ -750,6 +750,24 @@ observed. Headless Chromium is not a useful test for this.
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-27 — the frame stack has real stills
+
+`js/frames-urls.js` (generated) now carries 109 TMDB CDN URLs across all 26 films, and the manifest
+prefers a URL over a local path. No image bytes are committed; the live site gets its pictures and
+nothing is redistributed from here.
+
+- `tools/fetch-stills.mjs --urls` now emits a JS module the app imports directly, so regenerating
+  is the whole update step — it used to write JSON that had to be wired up by hand.
+- Verified every one of the 26 films resolved to the correct TMDB entry, including the two that
+  could plausibly have gone wrong: **Oldboy** matched the 2003 original rather than the 2013
+  remake, and *Attack on Titan: THE LAST ATTACK* matched the 2024 compilation film. Zero
+  mismatches.
+- `image.tmdb.org` returns `access-control-allow-origin: *`, so the `crossOrigin = 'anonymous'`
+  the engine sets on remote stills does not break the load. Checked before wiring it up, because
+  setting crossOrigin against a CDN without CORS headers fails the image silently.
+
+Rendering verified on a clean console with no errors.
 
 ### 2026-07-27 — titles on the frames, 26 films, and tooling to populate them
 
