@@ -238,6 +238,39 @@ changing anything in `js/sync.js`.
 
 ---
 
+## Look and feel
+
+The interface is modelled on [depoluxe.xyz](https://depoluxe.xyz), a film-production portfolio:
+EB Garamond, pure black and white, square corners, hairline rules instead of boxes, roman-numeral
+counters and italic titles in typographic quotes.
+
+The landing screen and the waiting room carry an **ambient frame stack** — a slow contact sheet of
+movie stills in the bottom-left corner, each frame sized `BASE · 0.72^(distance from the current
+one)` so two or three read as large and the rest shrink away along the bottom and up the left edge.
+It advances on its own, holding each composition for a moment and then stepping, and it is removed
+entirely the instant the film starts so nothing competes with the movie.
+
+**Adding your own stills.** Drop landscape images (roughly 16:9, ~1600px wide is plenty) into
+`img/frames/`, then set `src` on the matching entry in [`js/frames-data.js`](js/frames-data.js):
+
+```js
+{ title: 'Blade Runner 2049', year: 2017, director: 'Denis Villeneuve',
+  src: 'img/frames/blade-runner-2049.jpg' },
+```
+
+Entries with no `src` — the state it ships in — draw as numbered slates with crop marks, which is
+a designed placeholder rather than a broken image, so a half-filled list is fine. Fewer than twelve
+entries is also fine; the list repeats to fill the stack.
+
+The typeface is self-hosted in [`fonts/`](fonts/) (EB Garamond, SIL Open Font License, see
+`fonts/OFL.txt`) rather than linked from Google Fonts, so there is no third-party request and no
+flash of fallback text on the landing screen.
+
+If you have "reduce motion" turned on in your OS, the stack draws a single still composition and
+never animates.
+
+---
+
 ## Prior art
 
 If this ever gives you trouble, [Syncplay](https://syncplay.pl/) + VLC does the synchronised

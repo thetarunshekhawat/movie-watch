@@ -22,6 +22,9 @@ import {
   autoHideControls, toggleFullscreen, bindKeys, bindKeyUp, banner,
   centerStatus, bindPanelCloses, bindDismissOnOutside, closeOtherPanels,
 } from './ui.js';
+// Starts itself on import and mounts at body level. We only tell it when to
+// move into #stage and when to go away for good.
+import * as frames from './frames.js';
 
 const $ = id => document.getElementById(id);
 
@@ -104,7 +107,7 @@ async function copyLink(code, btn) {
   const label = btn.textContent;
   try {
     await navigator.clipboard.writeText(shareLink(code));
-    btn.textContent = 'Copied ✓';
+    btn.textContent = 'Copied';
     setTimeout(() => (btn.textContent = label), 1600);
   } catch {
     $('shareHint').textContent = shareLink(code);
@@ -135,13 +138,13 @@ $('videoFile').addEventListener('change', async () => {
   setStatus($('videoStatus'), '', 'Fingerprinting…');
   movieFp = await fingerprint(file);
 
-  const summary = `✓ ${file.name} — ${formatTime(result.duration)}, ${(file.size / 1e9).toFixed(2)} GB`;
+  const summary = `${file.name} — ${formatTime(result.duration)}, ${(file.size / 1e9).toFixed(2)} GB`;
 
   if (result.audioWarning) {
     // Playable, but probably silent. Let them continue — they may know it's silent.
     setStatus(
       $('videoStatus'), 'warn',
-      `${summary}\n\n⚠ ${result.audioWarning.reason}\n\nTo fix the audio:`,
+      `${summary}\n\n${result.audioWarning.reason}\n\nTo fix the audio:`,
       result.audioWarning.fix
     );
   } else {
@@ -153,11 +156,14 @@ $('videoFile').addEventListener('change', async () => {
 
 $('subFile').addEventListener('change', () => {
   subFile = $('subFile').files[0] || null;
-  if (subFile) setStatus($('subStatus'), 'ok', `✓ ${subFile.name} — only you will see these`);
+  if (subFile) setStatus($('subStatus'), 'ok', `${subFile.name} — only you will see these`);
 });
 
 function setStatus(el, cls, text, code) {
-  el.className = 'file-status' + (cls ? ' ' + cls : '');
+  // Swap only the state class. This used to assign el.className outright,
+  // which silently wiped any other class the markup put on the element.
+  el.classList.remove('ok', 'warn', 'err');
+  if (cls) el.classList.add(cls);
   el.textContent = text;
   if (code) {
     const c = document.createElement('code');
@@ -347,7 +353,7 @@ async function startSession(roomCode) {
         id: `mismatch:${from}`, kind: 'warn', sticky: true,
         title: `${name || 'Someone'} has a different file`,
         body: `Yours: ${movieFile.name} · Theirs: ${fileName}. Timestamps may not line up — `
-            + 'they can use the sync offset in Settings (⚙) to correct it.',
+            + 'they can use the sync offset in Settings to correct it.',
       });
     }
   };
@@ -535,6 +541,15 @@ async function startSession(roomCode) {
     phase = startPhase;
 
     $('lobby').hidden = true;
+    // Set the phase class in the SAME synchronous tick as the reveal.
+    // applyPhase() sets this same class ~70 lines further down, but several
+    // `await`s land in between (attach, loadSubtitles, startCall) — and for
+    // that whole window the stage would be visible with no phase class, so
+    // the black, not-yet-started <video> paints over the ambient layer and
+    // the waiting room is simply missing. Idempotent with applyPhase().
+    stage.classList.toggle('phase-lobby', startPhase === 'lobby');
+    if (startPhase === 'lobby') frames.mount(stage);
+    else frames.stop();
     stage.hidden = false;
 
     attach(video, movieFile);
@@ -624,7 +639,7 @@ async function startSession(roomCode) {
           id: 'cam', kind: 'warn',
           title: 'Camera and mic unavailable',
           body: 'Everything else works — sync, chat and reactions are unaffected. '
-              + 'Press 📷 to try again once you\'ve allowed access.',
+              + 'Press the camera button to try again once you\'ve allowed access.',
         });
       }
     }
@@ -635,6 +650,12 @@ async function startSession(roomCode) {
 
   function applyPhase() {
     stage.classList.toggle('phase-lobby', phase === 'lobby');
+    // The only correct place to retire the ambient stack. All four "the movie
+    // starts now" paths funnel through here — host pressing start, a guest
+    // receiving the phase message, the bare-play safety net in onRemoteCtrl,
+    // and someone admitted mid-film who never calls enterPlaying() at all.
+    // Hooking #startMovieBtn instead would miss three of them.
+    if (phase !== 'lobby') frames.stop();
     $('greenRoom').hidden = phase !== 'lobby';
     $('greenCode').textContent = roomCode;
     updateControlAccess();
@@ -849,10 +870,15 @@ async function startSession(roomCode) {
       if (scrubbing || !video.duration) return;
       scrub.value = String((video.currentTime / video.duration) * 1000);
       $('timeNow').textContent = formatTime(video.currentTime);
+      // Feeds the hairline progress rail down the left edge of the stage
+      // (#stage::after scales by this). Free — we already have the numbers.
+      stage.style.setProperty('--progress', String(video.currentTime / video.duration));
     });
 
-    video.addEventListener('play',  () => ($('playBtn').textContent = '⏸'));
-    video.addEventListener('pause', () => ($('playBtn').textContent = '▶'));
+    // A class, NOT textContent. #playBtn holds two inline SVGs and writing
+    // textContent here would delete both on the first play event.
+    video.addEventListener('play',  () => $('playBtn').classList.add('playing'));
+    video.addEventListener('pause', () => $('playBtn').classList.remove('playing'));
 
     scrub.addEventListener('pointerdown', () => (scrubbing = true));
     scrub.addEventListener('input', () => {
@@ -936,7 +962,7 @@ async function startSession(roomCode) {
           id: 'cam', kind: 'warn',
           title: 'Camera and mic unavailable',
           body: 'The browser refused access. Check the permission prompt or the site '
-              + 'settings, then press 📷 again.',
+              + 'settings, then press the camera button again.',
         });
       }
     });
@@ -1092,7 +1118,7 @@ async function startSession(roomCode) {
           title: 'This connection is on your own machine',
           body: 'You are connected over a local-only network path. If the others are on '
               + 'different computers, this is a stale Movie Watch window on THIS one — '
-              + 'check the roster (👥); if you see your own name, close your other tabs '
+              + 'check the room list; if you see your own name, close your other tabs '
               + 'and windows and reload. (Fine to ignore if you are all on the same wifi.)',
         });
       }

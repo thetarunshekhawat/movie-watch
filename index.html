@@ -4,10 +4,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Movie Watch</title>
+
+<!-- Only the two latin faces are preloaded; latin-ext is left to unicode-range
+     so it downloads only if someone types an accented display name.
+     `crossorigin` is required on font preloads even same-origin. -->
+<link rel="preload" href="fonts/eb-garamond-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/eb-garamond-latin-italic.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="css/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍿</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23000'/><rect x='8' y='8' width='84' height='84' fill='none' stroke='%23fff' stroke-width='3'/><text x='50' y='72' font-family='Garamond,Times,serif' font-size='62' fill='%23fff' text-anchor='middle'>M</text></svg>">
 </head>
 <body>
+
+<!-- ══════════════════════════ AMBIENT ══════════════════════════
+     The corner frame stack. Lives at body level so it survives the lobby
+     card scrolling (`.lobby` is overflow-y:auto), and is RE-PARENTED into
+     #stage on entry rather than duplicated — everything visible on the
+     player screen must be a descendant of #stage or it vanishes in
+     fullscreen. Moving a canvas in the DOM keeps its bitmap.
+     Driven entirely by js/frames.js; decorative, so aria-hidden. -->
+<div id="ambient" aria-hidden="true"><canvas></canvas></div>
 
 <!-- ══════════════════════════ LOBBY ══════════════════════════
      Three cards, one visible at a time: choose what you're doing, fill in the
@@ -18,12 +33,16 @@
 
   <!-- ─────────── Landing: create or join ─────────── -->
   <div class="lobby-card" id="landingCard">
-    <h1>🍿 Movie Watch</h1>
+    <!-- The wordmark splits to the two edges of its own box. Safe to make this
+         a flex container: <h1> is never toggled with the `hidden` property.
+         Do NOT do the same to #setupTitle / #statusTitle — JS rewrites their
+         textContent and would wipe the spans. -->
+    <h1 class="wordmark"><span>Movie</span><span>Watch</span></h1>
     <p class="tagline">Same movie, same moment, from anywhere.</p>
 
     <div class="choice">
       <button class="choice-btn" id="createChoice" type="button">
-        <span class="choice-icon">🎬</span>
+        <span class="choice-num">I</span>
         <span class="choice-text">
           <b>Create a room</b>
           <span class="hint">Start a watch party and share the link</span>
@@ -31,7 +50,7 @@
       </button>
 
       <button class="choice-btn" id="joinChoice" type="button">
-        <span class="choice-icon">🔗</span>
+        <span class="choice-num">II</span>
         <span class="choice-text">
           <b>Join a room</b>
           <span class="hint">Someone gave you a room code</span>
@@ -148,12 +167,13 @@
 
       <ul class="roster" id="greenRoster"></ul>
 
-      <button id="startMovieBtn" class="btn-primary" type="button" hidden>▶ Start the movie</button>
+      <button id="startMovieBtn" class="btn-primary" type="button" hidden>Start the movie</button>
       <p class="green-wait" id="greenWait"></p>
 
       <p class="hint green-tips">
-        💬 chat and 😀 reactions work in here · 📷 turns your camera on and off at any
-        time, including mid-movie · forgot subtitles? press <b>CC</b> whenever you like
+        Chat and reactions work in here · the camera button turns your camera on and
+        off at any time, including mid-movie · forgot subtitles? Press <b>CC</b>
+        whenever you like
       </p>
     </div>
   </div>
@@ -188,23 +208,39 @@
       <span class="time" id="timeTotal">0:00</span>
     </div>
 
+    <!-- Iconography rule: a hairline pictogram where a universal convention
+         exists (transport, mic, camera, gear, fullscreen), and a letterspaced
+         word where it does not (CC, ROOM, CHAT). The reaction button stays an
+         emoji because the thing it produces IS an emoji.
+
+         #playBtn holds BOTH glyphs and swaps them with the `.playing` class —
+         main.js used to write textContent here, which would wipe an SVG. -->
     <div class="btn-row">
-      <button id="playBtn" class="ctl synced" title="Play / pause — synced (Space)">▶</button>
-      <button id="back10" class="ctl synced" title="Back 10s — synced (←)">⏪</button>
-      <button id="fwd10" class="ctl synced" title="Forward 10s — synced (→)">⏩</button>
+      <button id="playBtn" class="ctl synced" title="Play / pause — synced (Space)" aria-label="Play or pause">
+        <svg class="i i-play" viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M8 5.2v13.6L19 12z"/></svg>
+        <svg class="i i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 5v14M14.5 5v14"/></svg>
+      </button>
+      <button id="back10" class="ctl synced" title="Back 10s — synced (←)" aria-label="Back ten seconds">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 6l-6 6 6 6M19 6l-6 6 6 6"/></svg>
+        <span class="ctl-num">10</span>
+      </button>
+      <button id="fwd10" class="ctl synced" title="Forward 10s — synced (→)" aria-label="Forward ten seconds">
+        <span class="ctl-num">10</span>
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 6l6 6-6 6M5 6l6 6-6 6"/></svg>
+      </button>
 
       <span class="divider"></span>
 
       <!-- Local-only group -->
       <div class="ctl-group" title="Movie volume — only affects you">
-        <span class="ctl-icon">🔊</span>
-        <input type="range" id="volume" class="slider" min="0" max="1" step="0.01" value="1">
+        <span class="ctl-icon">Mov</span>
+        <input type="range" id="volume" class="slider" min="0" max="1" step="0.01" value="1" aria-label="Movie volume">
         <span class="ctl-tag">just you</span>
       </div>
 
       <div class="ctl-group" title="Their voice volume — only affects you">
-        <span class="ctl-icon">🗣</span>
-        <input type="range" id="voiceVolume" class="slider" min="0" max="1" step="0.01" value="1">
+        <span class="ctl-icon">Vox</span>
+        <input type="range" id="voiceVolume" class="slider" min="0" max="1" step="0.01" value="1" aria-label="Their voice volume">
         <span class="ctl-tag">just you</span>
       </div>
 
@@ -214,24 +250,33 @@
            either of these acquires the camera, and both keep working at any point
            in the session, so nobody is locked out of video by a box they forgot
            to tick. -->
-      <button id="micBtn" class="ctl" title="Mute / unmute your mic (M)">🎙</button>
-      <button id="camBtn" class="ctl" title="Camera on / off">📷</button>
-      <button id="duckBtn" class="ctl active" title="Auto-lower movie volume when they speak">🔉</button>
+      <button id="micBtn" class="ctl" title="Mute / unmute your mic (M)" aria-label="Mute or unmute your microphone">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="9.4" y="2.8" width="5.2" height="10.4" rx="2.6"/><path d="M5.8 11a6.2 6.2 0 0 0 12.4 0M12 17.2V21"/></svg>
+      </button>
+      <button id="camBtn" class="ctl" title="Camera on / off" aria-label="Camera on or off">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.8" y="6.8" width="12.4" height="10.4" rx="1.4"/><path d="M15.2 11.2l6-3.2v8l-6-3.2z"/></svg>
+      </button>
+      <button id="duckBtn" class="ctl active" title="Auto-lower movie volume when they speak" aria-label="Automatically lower movie volume when someone speaks">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M3.5 9.4v5.2h3l4.2 3.2V6.2L6.5 9.4z"/><path d="M14.6 9.6l3.2 3.2 3.2-3.2"/></svg>
+      </button>
 
       <span class="divider"></span>
 
-      <!-- "CC", not 💬 — chat is the 💬 button and two identical icons is a
-           coin-toss every time you reach for one. -->
-      <button id="subsBtn" class="ctl cc" title="Subtitles — only yours (C)">CC</button>
-      <button id="settingsBtn" class="ctl" title="Subtitles &amp; sync settings">⚙</button>
-      <button id="rosterBtn" class="ctl" title="Who's in the room">
-        👥<span class="badge count" id="rosterCount">1</span>
+      <!-- "CC" is itself a broadcast convention, so it stays as letters. -->
+      <button id="subsBtn" class="ctl cc" title="Subtitles — only yours (C)" aria-label="Subtitles">CC</button>
+      <button id="settingsBtn" class="ctl" title="Subtitles &amp; sync settings" aria-label="Settings">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6.6"/><circle cx="12" cy="12" r="2.4"/><path d="M12 2.6v2.8M12 18.6v2.8M21.4 12h-2.8M5.4 12H2.6M18.68 5.32l-1.98 1.98M7.3 16.7l-1.98 1.98M18.68 18.68l-1.98-1.98M7.3 7.3L5.32 5.32"/></svg>
       </button>
-      <button id="chatBtn" class="ctl" title="Chat">
-        💬<span class="badge" id="chatBadge" hidden>0</span>
+      <button id="rosterBtn" class="ctl ctl-word" title="Who's in the room" aria-label="Who is in the room">
+        Room<span class="badge count" id="rosterCount">1</span>
       </button>
-      <button id="reactBtn" class="ctl" title="Send a reaction">😀</button>
-      <button id="fsBtn" class="ctl" title="Fullscreen (F)">⛶</button>
+      <button id="chatBtn" class="ctl ctl-word" title="Chat" aria-label="Chat">
+        Chat<span class="badge" id="chatBadge" hidden>0</span>
+      </button>
+      <button id="reactBtn" class="ctl" title="Send a reaction" aria-label="Send a reaction">😀</button>
+      <button id="fsBtn" class="ctl" title="Fullscreen (F)" aria-label="Fullscreen">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.8 9.2V3.8h5.4M20.2 9.2V3.8h-5.4M3.8 14.8v5.4h5.4M20.2 14.8v5.4h-5.4"/></svg>
+      </button>
     </div>
 
     <div class="status-row">
@@ -248,13 +293,13 @@
   <div class="panel roster-panel" id="rosterPanel" data-owner="rosterBtn" hidden>
     <div class="panel-head">
       <h3>In this room</h3>
-      <button class="panel-close" data-close="rosterPanel">✕</button>
+      <button class="panel-close" data-close="rosterPanel" aria-label="Close">×</button>
     </div>
     <div class="panel-body">
       <ul class="roster" id="rosterList"></ul>
       <!-- Host only. Pulls everyone to the host's position and plays, so a room
            that has drifted apart or half-paused comes back together. -->
-      <button id="startAllBtn" class="btn-primary" hidden>▶ Bring everyone to my position</button>
+      <button id="startAllBtn" class="btn-primary" hidden>Bring everyone to my position</button>
       <p class="hint" id="rosterHint"></p>
 
       <!-- Host only. Placed here rather than behind a new control-bar button
@@ -289,7 +334,7 @@
   <div class="panel settings-panel" id="settingsPanel" data-owner="settingsBtn" hidden>
     <div class="panel-head">
       <h3>Settings</h3>
-      <button class="panel-close" data-close="settingsPanel">✕</button>
+      <button class="panel-close" data-close="settingsPanel" aria-label="Close">×</button>
     </div>
 
     <div class="panel-body">
@@ -371,7 +416,7 @@
   <div class="panel chat-panel" id="chatPanel" data-owner="chatBtn" hidden>
     <div class="panel-head">
       <h3>Chat</h3>
-      <button class="panel-close" data-close="chatPanel">✕</button>
+      <button class="panel-close" data-close="chatPanel" aria-label="Close">×</button>
     </div>
     <div class="chat-log" id="chatLog"></div>
     <form class="chat-form" id="chatForm" autocomplete="off">
