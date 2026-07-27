@@ -519,12 +519,12 @@ banner and sync keeps working.
 **Fullscreen overlay is unverified.** The code deliberately fullscreens the `#stage` container
 rather than the `<video>`, which is the documented fix, but this has not been observed working.
 
-**TURN is required on this network, and its absence is reported as "Room doesn't exist".**
-*(Measured 2026-07-27 — this replaces the previous "no evidence either way" note.)* A real
-cross-network attempt failed: the host sat in the waiting room on Chrome/Windows while the joiner
-on Safari/macOS got `Room “movie-jt523c” doesn't exist`. The room existed. The two browsers simply
-could not build a peer connection, and `joinExisting()` cannot tell those two cases apart — see the
-next entry. Evidence gathered from the joining machine:
+**TURN is required on this network. It is now configured, but the fix is UNVERIFIED against the
+pair that failed.** *(Measured 2026-07-27 — this replaces the previous "no evidence either way"
+note.)* A real cross-network attempt failed: the host sat in the waiting room on Chrome/Windows
+while the joiner on Safari/macOS got `Room “movie-jt523c” doesn't exist`. The room existed. The two
+browsers simply could not build a peer connection, and `joinExisting()` cannot tell those two cases
+apart — see the next entry. Evidence gathered from the joining machine:
 
 - **The network hands out a different public IP per flow.** One `RTCPeerConnection`, one local port
   (`61143`), produced *two* srflx candidates at once: `103.114.167.242` and `122.15.199.237`. A
@@ -539,8 +539,20 @@ Together those two are fatal without a relay. The joiner advertises, say,
 the host and are dropped. The joiner's own checks leave via a *different* WAN IP than the one it
 advertised, so they arrive at the host from an unexpected source address and are dropped by the
 host's own address-restricted filter. Neither direction ever completes, ICE never succeeds,
-`onPeerJoin` never fires. This is precisely the case `TURN` exists for, and `TURN` in `net.js` is
-an empty array.
+`onPeerJoin` never fires. This is precisely the case `TURN` exists for.
+
+`TURN` in `net.js` is **no longer empty** — a Metered Open Relay account (project `movie-watch`,
+20GB/month free) went in the same day. What *is* verified: the credentials allocate real relay
+candidates from the affected network (`iceTransportPolicy: 'relay'` gathered six, via
+`45.79.127.179`), Trystero passes `turnConfig` through to `RTCPeerConnection`, and adding it did not
+regress ordinary peering. What is **not** verified: that the original Chrome/Windows ↔ Safari/macOS
+pair now connects. Nobody has re-run it. Until someone does and sees `Path: relay/…`, treat this as
+a well-founded fix rather than a confirmed one.
+
+One measurement from that network is worth keeping: the **UDP** TURN lookups failed there
+(`701 TURN host lookup received error`) and only the **TCP/TLS** entries allocated. All four URLs in
+the `TURN` array are load-bearing; trimming it to the plain `turn:…:80` udp entry would restore the
+original failure on exactly the network that prompted the fix.
 
 Ruled out while diagnosing, so nobody re-treads it: all five Nostr relays this app derives from its
 `appId` were reachable and correctly forwarded ephemeral events (publish → subscribe round trip);
@@ -577,22 +589,18 @@ Read the Settings (⚙) rows to tell the cases apart:
 
 ## Next steps
 
-1. **Add a TURN server. This is now the blocker, not a contingency.** The 2026-07-27 measurement
-   (see **Known issues**) showed the joining network cannot hold a direct path: per-flow WAN load
-   balancing plus address-and-port-dependent filtering. No amount of retrying fixes that; only a
-   relay does. Metered's Open Relay (metered.ca) gives **20GB/month** free — the "50GB, no card"
-   figure previously recorded here was wrong, and their published hostnames have changed too, so
-   fetch your own values from
-   `https://<yourapp>.metered.live/api/v1/turn/credentials?apiKey=<KEY>` and paste those verbatim
-   rather than trusting the placeholder hostnames in the `net.js` comment. Then confirm the
-   Settings **Path** row reads `relay/…` on the pair that used to fail. Note the credentials are
-   public in a static site; that is unavoidable without a backend.
+1. **Re-run the pair that failed, and read the Path row.** TURN is in (`net.js`), and every part of
+   it is verified *except* the part that matters: that those two specific machines now connect.
+   Same two people, same two networks, same room. `Path: relay/…` in Settings (⚙) is the proof.
+   Anything else — still "Room doesn't exist", or `Peers in room: 0` — means the relay is not being
+   selected, and the next thing to check is whether the movie file gate is stopping the joiner
+   before `connect()` ever runs. **Do this before building anything else.**
 2. **Stop reporting connection failure as "Room doesn't exist".** `joinExisting()` should
    distinguish "no announce ever seen" from "found them, could not connect". The cheapest honest
    split: keep waiting for `net.peerCount`, but if `room.getPeers()` has entries whose
    `connectionState` is `connecting`/`failed`, say so — the room was found, the network route was
    not — and point at TURN rather than at the room code.
-3. **Verify the camera on two real machines** once TURN is in — now more urgent than it was, since
+3. **Verify the camera on two real machines** now that TURN is in — more urgent than it was, since
    the camera is no longer opt-in and every session renegotiates. If it turns out to break
    cross-network links routinely, the fix is not to bring the checkbox back but to negotiate the
    media transceivers up front (a silent placeholder stream at join, swapped for the real tracks
@@ -616,6 +624,32 @@ each verified to forward ephemeral events, so reordering or pinning them fixes n
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-27 — TURN goes in
+
+`TURN` in `net.js` is no longer empty: a Metered Open Relay account (project `movie-watch`, 20GB
+per month free) now backs the ICE config, closing the failure diagnosed earlier the same day.
+
+Verified before wiring it in: the credentials allocate six real `relay` candidates from the network
+that failed (via `45.79.127.179`, forced with `iceTransportPolicy: 'relay'`); Trystero 0.25.3 does
+honour `turnConfig` (`core.js` builds `iceServers: Dt.concat(f ?? [])`, so it reaches
+`RTCPeerConnection` rather than being silently dropped); and two peers on one machine still reach
+`onPeerJoin` in 2.3s afterwards, with the live connection reporting 5 iceServers including the
+Metered entry. **Not** verified: that the original Chrome/Windows ↔ Safari/macOS pair now connects.
+That is **Next steps** item 1 and it needs two real people.
+
+Two things learned in the process, both now in the code comment:
+
+- **The real hostname is `global.relay.metered.ca`**, nothing like the `<subdomain>.metered.live`
+  placeholder the old comment carried. Metered changes these. The comment now points at the
+  credentials REST endpoint as the source of truth instead of naming hosts that go stale.
+- **UDP TURN lookups fail on the affected network** (`701 TURN host lookup received error`); only
+  the TCP and TLS entries allocated. All four URLs are load-bearing. Trimming the array to the
+  plain udp entry would restore the exact failure this fixes.
+
+Also corrected: the free tier is 20GB/month, not the "50GB, no card" this file claimed. The
+credentials are public — a static site has no backend to hide them behind — so the quota is
+burnable and rotation is a dashboard click.
 
 ### 2026-07-27 — the cross-network answer: TURN is required, and its absence lies about the room
 

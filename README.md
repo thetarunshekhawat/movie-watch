@@ -126,11 +126,12 @@ cannot tell an empty room apart from one it found but couldn't reach. In that or
 1. A room only exists while somebody is sitting in it. If the host closed their window, the room is
    gone — ask them to open it again. And check the code character for character.
 2. If they're definitely there, press **Try again** once, in case it was a slow relay handshake.
-3. If it fails again, it is almost certainly the network, not the room. Some networks — university
-   and office wifi especially, and mobile hotspots — will not allow two browsers to connect
-   directly, and this app has no relay server configured to fall back on. The tell is the Settings
-   (⚙) panel: **Peers in room: 0** with the connection never reaching `srflx` or `prflx`. Try both
-   people on ordinary home wifi. See "Add a TURN server" in `PROJECT.md` for the real fix.
+3. If it fails again, it is probably the network, not the room. Some networks — university and
+   office wifi especially, and mobile hotspots — will not let two browsers connect directly. There
+   is now a relay server configured to carry those cases, so this *should* just work; if it still
+   doesn't, open Settings (⚙) and read the **Path** row. `relay/…` means the relay is doing its job
+   and the problem is elsewhere. **Peers in room: 0** means the two never connected at all — worth
+   trying both people on ordinary home wifi to confirm that's what it is.
 
 **"Your request to join has been sent" and nothing happens.**
 The host is watching a film and may not have noticed the prompt. Press **Ask again**, or message
