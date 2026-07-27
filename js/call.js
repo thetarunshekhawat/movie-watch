@@ -37,8 +37,9 @@ const RELEASE_MS = 500;
  *
  * Acquiring the camera is deliberately a separate step (`call.enable()`), because
  * it is the one action here that changes the shape of every peer connection:
- * `room.addStream()` forces an ICE renegotiation, and with no TURN relay that can
- * kill a connection which was working perfectly for data. Keeping it separate
+ * `room.addStream()` forces an ICE renegotiation, which can kill a connection that
+ * was working perfectly for data. A TURN relay is configured now, which should
+ * make that much rarer than it was, but not impossible. Keeping it separate
  * means the camera can be turned on at any moment in the session — nobody is
  * locked out of video by a checkbox they didn't tick — while a session that never
  * turns it on never pays that cost at all.

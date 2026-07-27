@@ -17,10 +17,11 @@ full quality, and it works even on slow internet.
 - Webcams that go on and off whenever you like, with the movie ducking when someone talks
 
 > **A note on cameras.** Your camera comes on in the waiting room, and the camera button toggles it at any time.
-> Turning a camera on renegotiates the peer connection, and with no TURN relay configured that can
-> break a link that was working — which is why it happens in the waiting room, while people are
-> still saying hello, rather than an hour into the film. If the connection drops right after,
-> the app says so and offers to rejoin without video.
+> Turning a camera on renegotiates the peer connection, which can break a link that was working —
+> which is why it happens in the waiting room, while people are still saying hello, rather than an
+> hour into the film. If the connection drops right after, the app says so and offers to rejoin
+> without video. There is a TURN relay configured now, which should make this much rarer than it
+> was.
 
 There is **no server**. Just a web page.
 
@@ -120,9 +121,18 @@ Controls marked with a small tick affect both of you. Anything labelled **"just 
 ## When something's wrong
 
 **"Room X doesn't exist" — but I know it does.**
-A room only exists while somebody is sitting in it. If the host closed their window, the room is
-gone; ask them to create it again. If they're definitely there, it's a slow relay handshake — press
-**Try again**. And check the code character for character.
+Believe yourself, not the message. It means "no fully connected peer within 12 seconds", and it
+cannot tell an empty room apart from one it found but couldn't reach. In that order:
+
+1. A room only exists while somebody is sitting in it. If the host closed their window, the room is
+   gone — ask them to open it again. And check the code character for character.
+2. If they're definitely there, press **Try again** once, in case it was a slow relay handshake.
+3. If it fails again, it is probably the network, not the room. Some networks — university and
+   office wifi especially, and mobile hotspots — will not let two browsers connect directly. There
+   is now a relay server configured to carry those cases, so this *should* just work; if it still
+   doesn't, open Settings (⚙) and read the **Path** row. `relay/…` means the relay is doing its job
+   and the problem is elsewhere. **Peers in room: 0** means the two never connected at all — worth
+   trying both people on ordinary home wifi to confirm that's what it is.
 
 **"Your request to join has been sent" and nothing happens.**
 The host is watching a film and may not have noticed the prompt. Press **Ask again**, or message
@@ -163,11 +173,11 @@ to 10%. If it's badly out, hit **Force resync now** in Settings.
 Headphones. See above.
 
 **You can't see each other.**
-Press the camera button on both sides and check the browser actually granted access. If the cameras are on and you
-still can't see each other, you're almost certainly on different networks: there's no TURN relay
-configured, so there's no route for the video. Open **Settings** and read **Path** — `host` means
-same machine, `srflx`/`prflx` means direct, `relay` means TURN. Turn the cameras off and use a phone
-call instead; sync and chat don't need any of this.
+Press the camera button on both sides and check the browser actually granted access. If the cameras
+are on and you still can't see each other, open **Settings** and read **Path** — `host` means same
+machine, `srflx`/`prflx` means direct, `relay` means it's going through the TURN relay. Any of those
+means there *is* a route and something else is wrong. If Path is empty, the video has no route at
+all: turn the cameras off and use a phone call instead, since sync and chat don't need any of this.
 
 **Everything died the moment a camera came on.**
 That's the renegotiation. The app spots this and offers **Rejoin without video** — take it. Video

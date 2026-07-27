@@ -22,26 +22,44 @@ const APP_ID = 'movie-watch-p2p-v1';
  * corporate wifi). Media is relayed through it in that case, so it is slower —
  * but it beats not connecting at all.
  *
- * EMPTY ON PURPOSE. This used to point at openrelay.metered.ca with the public
- * `openrelayproject` credentials; that service is gone (see PROJECT.md gotchas).
- * There is no longer any credential-free public TURN server — they all get
- * abused as open proxies, so every survivor requires an account.
+ * This was empty until 2026-07-27, and that emptiness was the bug. A real
+ * cross-network pair could not connect: one side's network hands out a different
+ * public IP per flow and filters on address+port, so neither side's connectivity
+ * checks could ever land. The app reported that as *"Room doesn't exist"*. See
+ * PROJECT.md → Known issues. An earlier openrelay.metered.ca entry with the
+ * public `openrelayproject` credentials is long dead; there is no credential-free
+ * public TURN server left, so this is a real account (Metered Open Relay, 20GB
+ * free per month, project `movie-watch`).
  *
- * Leaving a dead server in here is worse than leaving it empty: ICE gathering
- * waits on it before giving up, and it fills the console with noise.
+ * ALL FOUR URLS ARE LOAD-BEARING — do not trim this to the udp entry.
+ * Gathering from the network that failed, the UDP lookups errored (`701 TURN host
+ * lookup received error`) and only the TCP/TLS ones allocated. Ports 80 and 443
+ * are chosen to pass firewalls that allow nothing else; `turns:` is TLS, which
+ * survives deep-packet inspection. Verified from that same network: six `relay`
+ * candidates allocated (via 45.79.127.179) with `iceTransportPolicy: 'relay'`.
  *
- * TO ENABLE: sign up for a free TURN provider and paste the credentials below.
- * Metered (metered.ca) gives 50GB/month free with no card and hands you exactly
- * this shape. Trystero's default STUN servers are still used either way.
+ * These credentials are PUBLIC — this is a static site with no backend, so anyone
+ * who views source can read and spend them. Unavoidable without a server. Treat
+ * the 20GB as burnable; rotate in the Metered dashboard if it drains. Re-fetch
+ * with:
  *
- *   const TURN = [{
- *     urls: ['turn:<your-subdomain>.metered.live:80',
- *            'turn:<your-subdomain>.metered.live:443?transport=tcp'],
- *     username: '<your-username>',
- *     credential: '<your-credential>',
- *   }];
+ *   curl 'https://movie-watch.metered.live/api/v1/turn/credentials?apiKey=<KEY>'
+ *
+ * Trystero's default STUN servers are still used either way, and the stun: entry
+ * that endpoint returns is therefore dropped here. TURN is only ever used when a
+ * direct path is impossible, so pairs that can connect directly still do, and
+ * pay nothing.
  */
-const TURN = [];
+const TURN = [{
+  urls: [
+    'turn:global.relay.metered.ca:80',
+    'turn:global.relay.metered.ca:80?transport=tcp',
+    'turn:global.relay.metered.ca:443',
+    'turns:global.relay.metered.ca:443?transport=tcp',
+  ],
+  username: '63a472becbee94ec8e12b0f1',
+  credential: 'kOX+q8Dd1KiZ+RMD',
+}];
 
 /**
  * DO NOT pin a hand-picked relay list here. This was tried and it broke discovery

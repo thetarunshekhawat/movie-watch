@@ -628,8 +628,9 @@ async function startSession(roomCode) {
     //
     // Turned on automatically here, in the waiting room, and NOT at any point
     // during the film. Adding a media stream forces an ICE renegotiation on every
-    // peer connection, and with no TURN relay configured that can kill a link that
-    // was working perfectly for data. Doing it now means that if it is going to
+    // peer connection, which can kill a link that was working perfectly for data —
+    // less likely now that a TURN relay is configured, but still possible on a bad
+    // network pair. Doing it now means that if it is going to
     // break anything, it breaks while people are still saying hello — not ninety
     // minutes into the movie.
     if (sessionStorage.getItem('mw:noAutoCam') !== '1') {
@@ -1125,9 +1126,9 @@ async function startSession(roomCode) {
 
       const broken = d.state === 'failed' || d.state === 'disconnected';
 
-      // Adding a camera renegotiates every peer connection, and with no TURN relay
-      // that renegotiation is the single most likely thing to break a link that
-      // was working. If a failure shows up right after the camera went on, say so
+      // Adding a camera renegotiates every peer connection, and that renegotiation
+      // is still the single most likely thing to break a link that was working,
+      // TURN or no TURN. If a failure shows up right after the camera went on, say so
       // and offer the way out, rather than leaving people to guess.
       if (net.peerCount && broken && !camWarned && cameraOnAt && Date.now() - cameraOnAt < 20_000) {
         camWarned = true;

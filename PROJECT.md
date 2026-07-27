@@ -179,8 +179,9 @@ preflight so a wrong file produces a useful error instead of a black screen.
 
 **~~Cameras are opt-in, off by default.~~ REVERSED 2026-07-27 — see the next entry.** The original
 reasoning still holds and is why the replacement is shaped the way it is: sending a webcam stream
-forces an ICE renegotiation, and with no TURN relay that can kill a peer connection which was
-working perfectly for data — taking chat, reactions, presence and playback sync down with it.
+forces an ICE renegotiation, which can kill a peer connection that was working perfectly for data —
+taking chat, reactions, presence and playback sync down with it. *(A TURN relay went in on
+2026-07-27, which should make this much rarer; the shape of the design still stands.)*
 
 **The camera checkbox is gone; the camera is on demand instead.** The checkbox was a one-way door:
 forget to tick it and you could not get video for the whole session, which is a worse and more
@@ -473,6 +474,24 @@ of the defaults are console noise, not a functional problem; redundancy exists t
 Leave relay selection alone unless you can test end-to-end discovery, from two networks, against
 any replacement list.
 
+**Which relays are in play is derivable, so measure them instead of guessing.** Trystero picks
+five (`redundancy: 5`) from its 47 defaults by seeded shuffle, and the seed is the sum of the
+`appId` character codes — deterministic, so every peer in the app lands on the *same* five. For
+`movie-watch-p2p-v1` (seed `1655`) they are `social.amanah.eblessing.co`, `nostr.vulpem.com`,
+`schnorr.me`, `testnet-relay.samt.st` and `relay-can.zombi.cloudrodion.com`. This kills a whole
+class of wrong theory: peers cannot "draw disjoint relay subsets and miss each other", because the
+subset is not random per peer. It also means relay health is a five-line check — open each socket,
+publish a signed ephemeral event on a `#x` topic, and see whether your own subscription receives
+it back. A relay that accepts the socket but never echoes is a dud; a relay that echoes works. Do
+that before blaming relays for anything.
+
+**"Peer discovered" and "peer connected" are different events, and only the second one counts.**
+`net.peerCount` rises on `room.onPeerJoin`, which Trystero fires once the WebRTC data channel is
+open — after signaling, ICE, and DTLS. Nothing in this app observes discovery on its own. So any
+code that treats `peerCount === 0` as "the room is empty" is really saying "no fully connected
+peer", and will blame the room for what is actually a network-path failure. `joinExisting()` does
+exactly this today; see **Known issues**.
+
 **A zero-height wrapper silently pins an absolutely-positioned child to the top edge.** *(This is
 why peer tiles could only ever be dragged sideways.)* `#peerTiles` was an unstyled `<div>`, so it
 had height 0 — but the tiles inside it are `position: absolute`, so they were laid out against
@@ -675,14 +694,61 @@ banner and sync keeps working.
 **Fullscreen overlay is unverified.** The code deliberately fullscreens the `#stage` container
 rather than the `<video>`, which is the documented fix, but this has not been observed working.
 
+**TURN is required on this network. It is now configured, but the fix is UNVERIFIED against the
+pair that failed.** *(Measured 2026-07-27 — this replaces the previous "no evidence either way"
+note.)* A real cross-network attempt failed: the host sat in the waiting room on Chrome/Windows
+while the joiner on Safari/macOS got `Room “movie-jt523c” doesn't exist`. The room existed. The two
+browsers simply could not build a peer connection, and `joinExisting()` cannot tell those two cases
+apart — see the next entry. Evidence gathered from the joining machine:
+
+- **The network hands out a different public IP per flow.** One `RTCPeerConnection`, one local port
+  (`61143`), produced *two* srflx candidates at once: `103.114.167.242` and `122.15.199.237`. A
+  third, `43.255.222.130`, appeared in UDP probes from the same socket. The machine sits on
+  `10.10.40.0/21` behind a shared gateway with many neighbours — an institutional CGNAT with
+  several WAN uplinks, load-balanced per flow.
+- **NAT filtering is address-and-port-dependent** (RFC 5780 test against `stun.miwifi.com`: replies
+  from a different IP *and* from a different port were both dropped).
+
+Together those two are fatal without a relay. The joiner advertises, say,
+`122.15.199.237:61143`; the host's connectivity checks arrive at a gateway holding no mapping for
+the host and are dropped. The joiner's own checks leave via a *different* WAN IP than the one it
+advertised, so they arrive at the host from an unexpected source address and are dropped by the
+host's own address-restricted filter. Neither direction ever completes, ICE never succeeds,
+`onPeerJoin` never fires. This is precisely the case `TURN` exists for.
+
+`TURN` in `net.js` is **no longer empty** — a Metered Open Relay account (project `movie-watch`,
+20GB/month free) went in the same day. What *is* verified: the credentials allocate real relay
+candidates from the affected network (`iceTransportPolicy: 'relay'` gathered six, via
+`45.79.127.179`), Trystero passes `turnConfig` through to `RTCPeerConnection`, and adding it did not
+regress ordinary peering. What is **not** verified: that the original Chrome/Windows ↔ Safari/macOS
+pair now connects. Nobody has re-run it. Until someone does and sees `Path: relay/…`, treat this as
+a well-founded fix rather than a confirmed one.
+
+One measurement from that network is worth keeping: the **UDP** TURN lookups failed there
+(`701 TURN host lookup received error`) and only the **TCP/TLS** entries allocated. All four URLs in
+the `TURN` array are load-bearing; trimming it to the plain `turn:…:80` udp entry would restore the
+original failure on exactly the network that prompted the fix.
+
+Ruled out while diagnosing, so nobody re-treads it: all five Nostr relays this app derives from its
+`appId` were reachable and correctly forwarded ephemeral events (publish → subscribe round trip);
+their TLS certificates were all valid; the network is *not* symmetric NAT (port mapping is
+preserved); and peer discovery itself is fast — two browsers on one machine reached `onPeerJoin` in
+**1.5 s**, so the 12 s probe window has ample headroom and is not the problem.
+
+**"Room doesn't exist" is a misdiagnosis, not a message.** `joinExisting()` in `main.js` waits
+`ROOM_PROBE_MS` for `net.peerCount > 0`, and `peerCount` only rises on `room.onPeerJoin` — which
+fires after a **fully established WebRTC data channel**, not after discovery. So every transport
+failure downstream of discovery — ICE failure, no TURN, a dead relay, a firewall — surfaces to the
+user as the confident and wrong claim that nobody is in the room. The two states worth separating
+are "no announce ever seen" (really empty) and "found them, could not connect" (a network route
+problem). Until they are, this message will keep sending people to check a room code that was
+correct all along.
+
 **One Nostr relay throws cert errors.** `wss://schnorr.me/` fails with
 `ERR_CERT_AUTHORITY_INVALID` and spams the console. Harmless — Trystero connects through the other
-relays — but it makes the console noisy when debugging.
-
-**The two machines have never yet connected to each other.** Every session so far ended with each
-browser talking to a stale window on its own laptop (see the ghost-peer gotcha). So there is still
-**no evidence either way** about whether a direct cross-network path works, and none about whether
-TURN is needed. `TURN` in `net.js` is an empty array.
+relays — but it makes the console noisy when debugging. *(Checked 2026-07-27: the certificate now
+chains to Google Trust Services WE1 and is valid. This may have been fixed upstream; treat a
+recurrence as relay-side churn, not as an app problem.)*
 
 Read the Settings (⚙) rows to tell the cases apart:
 
@@ -717,33 +783,39 @@ observed. Headless Chromium is not a useful test for this.
 
 ## Next steps
 
-1. **Supply the real movie stills.** `js/frames-data.js` has twelve placeholder titles and no
+1. **Re-run the pair that failed, and read the Path row.** TURN is in (`net.js`), and every part of
+   it is verified *except* the part that matters: that those two specific machines now connect.
+   Same two people, same two networks, same room. `Path: relay/…` in Settings (⚙) is the proof.
+   Anything else — still "Room doesn't exist", or `Peers in room: 0` — means the relay is not being
+   selected, and the next thing to check is whether the movie file gate is stopping the joiner
+   before `connect()` ever runs. **Do this before building anything else.**
+2. **Stop reporting connection failure as "Room doesn't exist".** `joinExisting()` should
+   distinguish "no announce ever seen" from "found them, could not connect". The cheapest honest
+   split: keep waiting for `net.peerCount`, but if `room.getPeers()` has entries whose
+   `connectionState` is `connecting`/`failed`, say so — the room was found, the network route was
+   not — and point at TURN rather than at the room code.
+3. **Supply the real movie stills.** `js/frames-data.js` has twelve placeholder titles and no
    images. Drop landscape files into `img/frames/`, set `src` on each entry, then re-tune `K`
    (0.68–0.74) and `DWELL_MS` against real pictures — the current values were chosen against
    empty slates and may want adjusting once there is actual luminance in the frames.
-2. **Re-test with every other Movie Watch window closed on both machines.** Quit both browsers
-   completely first — that is the only way to be sure no ghost survives. Then check the **Path**
-   row: anything other than `host/host` means the two laptops have genuinely found each other.
-   Only once that is true is there any evidence about whether TURN is needed.
-3. **Add a TURN server** if, with ghosts gone, the two machines still never connect (`Peers in
-   room: 0`) or the connection reports `failed`. `TURN` in `net.js` is empty.
-   Metered (metered.ca) gives 50GB/month free with no card and hands back exactly the shape the
-   commented-out block expects.
-3. **Verify the camera on two real machines** once TURN is in — now more urgent than it was, since
+4. **Verify the camera on two real machines** now that TURN is in — more urgent than it was, since
    the camera is no longer opt-in and every session renegotiates. If it turns out to break
    cross-network links routinely, the fix is not to bring the checkbox back but to negotiate the
    media transceivers up front (a silent placeholder stream at join, swapped for the real tracks
    with Trystero's `replaceTrack`), which avoids renegotiation entirely.
-4. **Try the waiting room with real people.** It has only ever been driven by a script. The open
+5. **Try the waiting room with real people.** It has only ever been driven by a script. The open
    questions are whether 12s feels too long to wait on the "looking for room" card, and whether a
    host watching a film actually notices the corner join-request card.
-4. **Check `SPEAK_THRESHOLD` (0.045) against a real microphone.** Every speaking-indicator test so
+6. **Check `SPEAK_THRESHOLD` (0.045) against a real microphone.** Every speaking-indicator test so
    far has used an oscillator at a fixed level, which says nothing about whether a normal speaking
    voice crosses the line — or whether movie audio bleeding into the mic crosses it constantly.
-5. Consider reordering/pinning Nostr relays to drop the ones with bad certificates
-   (`schnorr.me`, `relay.agorist.space`).
-6. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
+7. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
    sessions, so the movie doesn't have to be re-picked every time.
+
+*Dropped from this list: "re-test with every window closed to rule out ghost peers" and "add TURN
+**if** the machines still fail". Both are answered — the cross-network attempt was real, not a
+ghost, and it failed. Relay selection is also settled: the five relays this `appId` derives were
+each verified to forward ephemeral events, so reordering or pinning them fixes nothing.*
 
 ---
 
@@ -751,6 +823,64 @@ observed. Headless Chromium is not a useful test for this.
 
 *Newest first.*
 
+### 2026-07-27 — TURN goes in
+
+`TURN` in `net.js` is no longer empty: a Metered Open Relay account (project `movie-watch`, 20GB
+per month free) now backs the ICE config, closing the failure diagnosed earlier the same day.
+
+Verified before wiring it in: the credentials allocate six real `relay` candidates from the network
+that failed (via `45.79.127.179`, forced with `iceTransportPolicy: 'relay'`); Trystero 0.25.3 does
+honour `turnConfig` (`core.js` builds `iceServers: Dt.concat(f ?? [])`, so it reaches
+`RTCPeerConnection` rather than being silently dropped); and two peers on one machine still reach
+`onPeerJoin` in 2.3s afterwards, with the live connection reporting 5 iceServers including the
+Metered entry. **Not** verified: that the original Chrome/Windows ↔ Safari/macOS pair now connects.
+That is **Next steps** item 1 and it needs two real people.
+
+Two things learned in the process, both now in the code comment:
+
+- **The real hostname is `global.relay.metered.ca`**, nothing like the `<subdomain>.metered.live`
+  placeholder the old comment carried. Metered changes these. The comment now points at the
+  credentials REST endpoint as the source of truth instead of naming hosts that go stale.
+- **UDP TURN lookups fail on the affected network** (`701 TURN host lookup received error`); only
+  the TCP and TLS entries allocated. All four URLs are load-bearing. Trimming the array to the
+  plain udp entry would restore the exact failure this fixes.
+
+Also corrected: the free tier is 20GB/month, not the "50GB, no card" this file claimed. The
+credentials are public — a static site has no backend to hide them behind — so the quota is
+burnable and rotation is a dashboard click.
+
+### 2026-07-27 — the cross-network answer: TURN is required, and its absence lies about the room
+
+A real attempt between two machines on different networks failed: the host sat in the waiting room
+on Chrome/Windows while the joiner on Safari/macOS was told `Room “movie-jt523c” doesn't exist`.
+The room existed. This is the first genuine cross-network attempt on record — every previous one
+turned out to be a browser talking to a ghost window on its own laptop — so it finally settles the
+question the last three entries left open.
+
+**What it is.** The joining network hands out a *different public IP per flow*: one
+`RTCPeerConnection` on one local port produced srflx candidates for both `103.114.167.242` and
+`122.15.199.237`, and a third address appeared on the same socket in UDP probes. Filtering is
+address-and-port-dependent (RFC 5780 test: replies from a different IP, and from a different port,
+were both dropped). A peer therefore cannot reach the address the joiner advertises, and the
+joiner's own checks arrive from an address the peer never expected. ICE cannot close that loop
+without a relay, and `TURN` in `net.js` was empty at the time of this measurement. *(Fixed later
+the same day — see the entry above.)*
+
+**What it is not.** Ruled out, so nobody re-treads them: the five Nostr relays this `appId` derives
+were each verified to forward ephemeral events end to end; their TLS certificates are all valid
+(`schnorr.me` included — its cert error appears to have been fixed upstream); the NAT is not
+symmetric; and discovery is fast — two browsers on one machine reached `onPeerJoin` in 1.5s, so the
+12s probe window is not the constraint.
+
+**The second bug, which hid the first.** `joinExisting()` waits for `net.peerCount > 0`, and
+`peerCount` only moves on `room.onPeerJoin` — which fires after a *fully established* data channel.
+Discovery succeeding and the connection failing is indistinguishable, at that call site, from
+nobody being there. So a network-route failure is reported as a confidently wrong claim about the
+room code, sending people to re-check something that was correct. Recorded in **Known issues**;
+the fix is **Next steps** item 2.
+
+No code changed in this entry — it is a measurement. **Next steps** are re-ordered around it:
+adding TURN is now the blocker rather than a contingency.
 ### 2026-07-27 — the frame stack has real stills
 
 `js/frames-urls.js` (generated) now carries 109 TMDB CDN URLs across all 26 films, and the manifest
