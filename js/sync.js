@@ -71,6 +71,16 @@ export function createSync(video, net, hooks = {}) {
   const offsetKey = `mw:offset:${net.roomCode}`;
   let offset = parseFloat(localStorage.getItem(offsetKey) || '0') || 0;
 
+  /**
+   * Host-set policy: when true, only the host may drive playback.
+   *
+   * Enforced at BOTH ends deliberately. Blocking the send alone would be a
+   * suggestion — anything that reached the wire would still be obeyed. Ignoring
+   * non-host commands on receive is what makes it real, and it also covers the
+   * window where someone has not yet been told the policy changed.
+   */
+  let controlLock = false;
+
   let nudgeTimer = null;
   let beatTimer = null;
   let weStalled = false;
@@ -123,6 +133,7 @@ export function createSync(video, net, hooks = {}) {
 
   function broadcast(type) {
     if (!net.peerCount) return;
+    if (controlLock && !net.isHost) return;
     clock += 1;
     const msg = { type, mediaTime: sharedTime(), seq: clock, sentAt: Date.now() };
     remember(msg, net.selfId);
@@ -176,6 +187,9 @@ export function createSync(video, net, hooks = {}) {
     // Must be the ACTUAL sender, not net.peerId. The tiebreak in accept() compares
     // peer ids, so crediting a message to the wrong peer can wrongly reject it.
     const from = fromPeer || net.peerId || '';
+    // Host-only mode: a command from anyone else is dropped on the floor, so a
+    // client that ignores the policy locally still cannot move the room.
+    if (controlLock && from !== net.hostId) return;
     if (!accept(msg, from)) return;
     remember(msg, from);
 
@@ -288,20 +302,37 @@ export function createSync(video, net, hooks = {}) {
   // ─────────────────────────── public API ───────────────────────────
 
   return {
+    /**
+     * May we drive playback right now?
+     *
+     * The local action has to be blocked as well as the broadcast. Letting a
+     * locked-out person pause their own copy while the room plays on would leave
+     * them silently out of sync — worse than the button simply not working.
+     */
+    get canControl() { return !controlLock || net.isHost; },
+
+    /** Host policy: restrict play/pause/seek to the host. */
+    setControlLock(on) { controlLock = !!on; },
+
     /** Toggle play/pause locally; the event listeners broadcast it. */
     toggle() {
+      if (!this.canControl) return false;
       if (video.paused) video.play().catch(err => hooks.onPlayBlocked?.(err));
       else video.pause();
+      return true;
     },
 
     /** Seek by a relative amount. Broadcast happens via the 'seeked' listener. */
     nudgeTime(delta) {
-      const t = Math.max(0, Math.min(video.duration || 0, video.currentTime + delta));
-      video.currentTime = t;
+      if (!this.canControl) return false;
+      video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + delta));
+      return true;
     },
 
     seekTo(t) {
+      if (!this.canControl) return false;
       video.currentTime = Math.max(0, Math.min(video.duration || 0, t));
+      return true;
     },
 
     get offset() { return offset; },

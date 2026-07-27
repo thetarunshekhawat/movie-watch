@@ -6,17 +6,21 @@ Everyone plays **their own copy** of the film from their own hard drive. Nothing
 streamed — only tiny "play"/"pause"/"seek" messages travel between you. So the video is always
 full quality, and it works even on slow internet.
 
+- **Create a room** or **join** one with a code — joining a room nobody's in tells you so
+- A **waiting room** where everyone gathers, chats and sees each other before the film starts
 - Anyone pauses, it pauses for everyone
 - A roster (👥) showing exactly who's in the room, and who's hosting
-- The host's **Start for everyone** pulls the whole room to the same moment
+- Arrive after the movie started? You **ask to join**, and the host gets a prompt
+- Host controls: allow or refuse late arrivals, and restrict playback to yourself
 - Chat and emoji reactions over the movie, without pausing it
-- **Volume and subtitles are yours alone** — set them however you like
-- Optional webcams, with the movie ducking when the other person talks
+- **Volume and subtitles are yours alone** — load subtitles at any point, even mid-film
+- Webcams that go on and off whenever you like, with the movie ducking when someone talks
 
-> **Cameras are off by default, and that's deliberate.** Sending video renegotiates the
-> connection, and without a TURN relay that can break an otherwise healthy link — taking sync and
-> chat down with it. Tick **Turn on camera and mic** in the lobby only if you're both on the same
-> wifi. Otherwise leave it off and put a normal video call on your phone alongside.
+> **A note on cameras.** Your camera comes on in the waiting room, and 📷 toggles it at any time.
+> Turning a camera on renegotiates the peer connection, and with no TURN relay configured that can
+> break a link that was working — which is why it happens in the waiting room, while people are
+> still saying hello, rather than an hour into the film. If the connection drops right after,
+> the app says so and offers to rejoin without video.
 
 There is **no server**. Just a web page.
 
@@ -74,19 +78,27 @@ Send that link to the other person once. It never expires, so they can bookmark 
 
 ## Movie night
 
-1. Everyone opens the link
-2. Type the **same room code** (or just use the `?room=...` link the app generates)
-3. Pick your movie file — and a subtitle file if you want one
-4. Hit **Join room**
-5. Open the roster (👥) and check everyone you expect is listed
-6. The **host** — whoever joined first — presses **Start for everyone**
+1. One person opens the link and picks **Create a room**. Pick your movie file, hit **Create room**.
+2. Press **Copy link** in the waiting room and send it to everyone else.
+3. Everyone else opens that link — it goes straight to **Join a room** with the code filled in — picks
+   their own copy of the movie, and hits **Join room**.
+4. You're all in the **waiting room**. Chat, wave at each other, sort out who's still getting snacks.
+5. Check the roster: everyone you expect should be listed, with one **HOST**.
+6. The host presses **▶ Start the movie**. Everyone starts at the same moment.
 
 After that anyone can pause, seek or skip, and it applies to the whole room.
 
-**If you turn cameras on, wear headphones.** This is not optional. Without them, the movie's audio
-comes out of your speakers, goes into your microphone, and echoes back to the other person. Browser
+**Turning up late.** If you join after the film has started, you'll see *"the movie has already
+started"* and your request goes to the host, who gets a prompt and can let you in. You land at
+exactly where everyone else is. The host can switch that off entirely in the roster panel under
+**Host controls**, along with restricting play/pause/seek to themselves.
+
+**Forgot your subtitles?** Press **CC** at any point, or drag a `.srt` onto the video. They're
+yours alone either way.
+
+**Wear headphones.** This is not optional once anyone's mic is on. Without them, the movie's audio
+comes out of your speakers, goes into your microphone, and echoes back to everyone else. Browser
 echo-cancellation is built for voices, not loud continuous film audio, and it will not save you.
-(With cameras off — the default — there's no microphone, so this doesn't apply.)
 
 ### Controls
 
@@ -107,10 +119,23 @@ Anything with a 🔗 on it affects both of you. Anything labelled **"just you"**
 
 ## When something's wrong
 
+**"Room X doesn't exist" — but I know it does.**
+A room only exists while somebody is sitting in it. If the host closed their window, the room is
+gone; ask them to create it again. If they're definitely there, it's a slow relay handshake — press
+**Try again**. And check the code character for character.
+
+**"Your request to join has been sent" and nothing happens.**
+The host is watching a film and may not have noticed the prompt. Press **Ask again**, or message
+them. If they've turned off late joining you'll be told outright instead of left waiting.
+
 **Someone's missing from the roster (👥).**
 The roster is the truth about who is actually connected. If a name isn't there, that person hasn't
 joined — check the room code matches exactly. If you see **your own name twice**, you have a stale
 Movie Watch window open somewhere; quit the browser entirely and rejoin.
+
+**The play button is greyed out.**
+Either the movie hasn't started yet (you're in the waiting room — the host starts it), or the host
+has set **Who can control playback** to *Host only*. Hover the button and it tells you which.
 
 **"It says connecting forever."**
 You're probably not in the same room code — check for typos, or just use the same link. If the code
@@ -138,11 +163,15 @@ to 10%. If it's badly out, hit **Force resync now** in Settings.
 Headphones. See above.
 
 **You can't see each other.**
-Cameras are off by default. Tick **Turn on camera and mic** in the lobby — on both sides. If it's
-ticked and you still can't see each other, you're almost certainly on different networks: there's
-no TURN relay configured, so there's no route for the video. Open Settings (⚙) and read **Path** —
-`host` means same machine, `srflx`/`prflx` means direct, `relay` means TURN. Leave cameras off and
-use a phone call instead; sync and chat don't need any of this.
+Press 📷 on both sides and check the browser actually granted access. If the cameras are on and you
+still can't see each other, you're almost certainly on different networks: there's no TURN relay
+configured, so there's no route for the video. Open Settings (⚙) and read **Path** — `host` means
+same machine, `srflx`/`prflx` means direct, `relay` means TURN. Turn the cameras off and use a phone
+call instead; sync and chat don't need any of this.
+
+**Everything died the moment a camera came on.**
+That's the renegotiation. The app spots this and offers **Rejoin without video** — take it. Video
+between two networks needs a TURN relay, which isn't configured.
 
 **"Connected" but nothing syncs — check this first.**
 Open Settings (⚙) and read **Path** and **Watching with**.

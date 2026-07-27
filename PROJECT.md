@@ -28,22 +28,24 @@ expensive.
 
 > ⚠️ **The section that rots fastest. Update it whenever anything lands.**
 
-**Phase:** Group rooms (roster + host + synchronised start) built and verified with three
-simultaneous peers. Deployed to GitHub Pages. **Still never verified between two real machines
-across the internet** — every attempt so far ended with each browser connected to a stale window
-on its own machine.
+**Phase:** The app is now a *room you enter*, not a form you submit — create/join, a waiting room
+where people gather and talk before the film, and host approval for anyone arriving late. Verified
+end-to-end with three live peers. Deployed to GitHub Pages. **Still never verified between two real
+machines across the internet** — every attempt so far ended with each browser connected to a stale
+window on its own machine.
 
 | Component | File | Status |
 |---|---|---|
 | Project docs | `PROJECT.md`, `CLAUDE.md` | ✅ Done |
 | HTML/CSS shell | `index.html`, `css/style.css` | ✅ Done |
 | Networking | `js/net.js` | ✅ Done — verified over real Nostr relays |
-| Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified |
+| Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified, plus a host-only control lock |
 | Player + file handling | `js/player.js` | ✅ Done — codec + audio preflight, fingerprint |
-| Subtitles | `js/subs.js` | ✅ Done — SRT→VTT verified |
-| Video call + auto-duck | `js/call.js` | ✅ Verified 2-way and 3-way with synthetic cameras, including tiles, badges, fade and drag. Opt-in, off by default; real webcams and cross-network still unproven |
-| Chat + reactions | `js/chat.js` | ✅ Done — verified peer-to-peer |
-| Layout / controls | `js/ui.js` | ✅ Done |
+| Subtitles | `js/subs.js` | ✅ Done — SRT→VTT verified, loadable at any point via CC or drag-and-drop |
+| Video call + auto-duck | `js/call.js` | ✅ On demand at any moment (no opt-in checkbox). Verified with synthetic cameras — tiles, badges, fade, drag, toggle on/off. Real webcams and cross-network still unproven |
+| Chat + reactions | `js/chat.js` | ✅ Done — verified peer-to-peer, works in the waiting room too |
+| Entrance, waiting room, host controls | `js/main.js` | ✅ Done — create/join, room-existence probe, phases, knock-to-enter |
+| Layout / controls | `js/ui.js` | ✅ Done — includes click-outside panel dismissal |
 | README | `README.md` | ✅ Done |
 | Deployed to GitHub Pages | — | ✅ Live at `https://thetarunshekhawat.github.io/movie-watch/` |
 
@@ -71,6 +73,26 @@ directions, the fade slider dimmed every tile to 0.3 with hover restoring 1.0,
 the size slider resized both tiles together, and subtitles moved from line 92 to
 line 80 when the control bar appeared and back when it hid.
 
+**Entrance, waiting room and host controls verified** with three live peers on
+real Nostr relays (2026-07-27):
+
+| Checked | Result |
+|---|---|
+| Create a room | Lands in the waiting room as HOST, playback controls disabled |
+| Join a room nobody is in | *"Room X doesn't exist"* after the 12s probe, with Try again / Back |
+| Join a real room | Found in <3s, both rosters agreed, `Alice HOST` + `Bob YOU` |
+| Host presses Start | Both left the waiting room and played, 1.98s vs 2.04s |
+| Non-host pause + seek | Propagated to the host, both within 0.02s |
+| Host-only playback | Follower's play/scrub disabled with a reason; **a direct `video.play()` from the console still could not move the room** |
+| Late joiner | *"Movie has already started, request sent to Alice"*; host got the popup; Allow → admitted and synced to 60.00 on both |
+| Decline | *"Not right now — Alice declined the request"*, stayed outside |
+| Late joining switched off | *"This room is closed"*, and the host was never interrupted |
+| Click-outside | Chat/roster/emoji dismiss on a video click; the control bar does not dismiss; the owning button still toggles cleanly |
+| Subtitles mid-movie | CC with no track opens the picker; SRT loaded 2 cues; a dropped `.vtt` replaced it |
+| Camera on demand | 📷 acquired the stream mid-session, tile appeared, off/on flipped `track.enabled` and the 🔇 badge |
+
+Zero console errors across the whole session.
+
 **Not yet verified:** a physical camera or microphone (so echo behaviour and
 push-to-talk are still untested), fullscreen overlay behaviour, and — the big
 one — any connection between two machines on different networks.
@@ -86,14 +108,20 @@ cd "Movie watch"
 python3 -m http.server 8000
 ```
 
-Then open `http://localhost:8000/?room=test`.
+Then open `http://localhost:8000/` and pick **Create a room**.
 
-**To test sync alone, without a second person:** open that URL in a normal window *and* an
-incognito window. They are two genuinely separate peers, so the entire sync loop is testable solo.
-Use a short clip, not a two-hour movie.
+**To test alone, without a second person:** create a room in a normal window, then open the
+`?room=` link in an incognito window and **Join a room**. They are two genuinely separate peers, so
+the whole loop — probe, waiting room, start, sync, and (once the first window has started the film)
+the knock-and-approve flow — is testable solo. Use a short clip, not a two-hour movie.
 
-**Room codes:** taken from `?room=<code>` in the URL, generated randomly if absent. The share link
-is just the page URL with that param. It never expires and never changes.
+Do not try to drive more than two tabs of the same browser: a backgrounded tab gets throttled hard
+enough to drop its peer connections entirely (see **Known issues**).
+
+**Room codes:** `?room=<code>` in the URL opens the join form with the code filled in. Creating a
+room reuses your last code, or generates one; either is editable. The share link is just the page
+URL with that param. It never expires and never changes — but a room only *exists* while at least
+one person is in it, which is what the join probe is checking.
 
 ---
 
@@ -109,6 +137,7 @@ is just the page URL with that param. It never expires and never changes.
               │                                                 │
               └──── WebRTC full mesh, peer-to-peer ─────────────┘
                     • DataChannel: play/pause/seek/heartbeat/chat
+                    •              room phase, host policy, join requests
                     • Media:       webcam + mic
                           ▲
                           │ one-time handshake only
@@ -145,12 +174,54 @@ Rather than handle that in the app, the file is remuxed once with ffmpeg and the
 the copy that gets shared. Both sides then have byte-identical files. The app still runs a codec
 preflight so a wrong file produces a useful error instead of a black screen.
 
-**Cameras are opt-in, off by default.** Sending a webcam stream forces an ICE renegotiation, and
-with no TURN relay that can kill a peer connection which was working perfectly for data — taking
-chat, reactions, presence and playback sync down with it. Those four are the point of the app; the
-webcam is a nice-to-have that WhatsApp can cover. So the lobby ships with the camera unticked, and
-an unticked box means `getUserMedia` is never called at all: no prompt, no media track, no
-renegotiation. Tick it only when both people are on the same network, or once TURN is configured.
+**~~Cameras are opt-in, off by default.~~ REVERSED 2026-07-27 — see the next entry.** The original
+reasoning still holds and is why the replacement is shaped the way it is: sending a webcam stream
+forces an ICE renegotiation, and with no TURN relay that can kill a peer connection which was
+working perfectly for data — taking chat, reactions, presence and playback sync down with it.
+
+**The camera checkbox is gone; the camera is on demand instead.** The checkbox was a one-way door:
+forget to tick it and you could not get video for the whole session, which is a worse and more
+common failure than the renegotiation it was guarding against. Now `startCall()` never touches
+`getUserMedia` — `call.enable()` does, and 📷/🎙 call it on first press, so the camera can go on
+and off at any point in the film. The renegotiation risk is handled by *timing* rather than by
+abstinence: the camera comes up automatically **in the waiting room**, before the movie starts, so
+if a network pair cannot survive the renegotiation it fails while people are still saying hello
+rather than an hour into the film. And because the failure is now predictable, it is also reported:
+a `failed`/`disconnected` state within 20s of a camera going on raises a banner naming the camera
+as the likely cause, with a **Rejoin without video** button that sets `mw:noAutoCam` in
+sessionStorage and reloads. A session that never turns a camera on still never renegotiates.
+
+**"Does this room exist?" can only mean "is anyone in it right now".** There is no server and no
+room registry, so joining runs a 12-second probe for any Trystero peer and reports the room missing
+if none answers. 12s is deliberately generous — Nostr discovery routinely takes the best part of
+ten — and the failure screen offers **Try again** rather than only a dead end, because wrongly
+telling someone a real room does not exist is the worse error. Abandoning the attempt calls
+`net.leave()`; skipping that would leave exactly the ghost peer that cost this project an evening.
+
+**A waiting room, and it is the stage rather than a separate screen.** `#stage` carries a
+`.phase-lobby` class and shows the `#greenRoom` overlay; the movie is simply not playing yet. That
+reuses the tiles, chat, bubbles, roster, banners and fullscreen exactly as they already work — a
+separate screen would have meant moving those DOM nodes between parents for no gain. `#selfTile`
+moved inside the tile container (`#peerTiles` → `#tiles`) so the waiting room can lay every face
+out in one grid and the movie phase can hand them straight back to floating.
+
+**Late arrivals knock; the host answers.** Joining a room whose phase is already `playing` sends a
+`knock` to the host and holds the newcomer on the status card — `createSync` is never called, so a
+half-admitted person can never drive playback. The host gets a small corner card, not a modal: they
+are watching a film, and nothing pauses. The host's *Let people join after the movie starts* toggle
+decides whether they are interrupted at all; with it off the knock is auto-declined and the host
+never sees it. **This is a doorbell, not a lock** — Trystero has already connected the peer at the
+data layer, and without a server nothing could prevent that. It works because everyone runs this
+same code.
+
+**Playback policy is enforced on receive, not just on send.** *Who can control playback* defaults
+to Everyone (the existing decision — this is friends watching a film, not a lecture). Set to *Host
+only*, `sync.js` blocks the broadcast **and** drops incoming `ctrl` from anyone who is not the host,
+and it also blocks the local action so a locked-out person cannot silently desync themselves.
+Verified by bypassing the UI entirely with a console `video.play()`: the room did not move.
+
+**Rejected: manual host transfer.** The host is derived from `joinedAt`, never stored, so it hands
+over by itself. A manual override fights that and can disagree between machines.
 
 **Everyone corrects toward the host; the host never corrects.** If peers correct toward each other
 they oscillate forever, and with three or more people chasing several clocks at once nothing ever
@@ -199,6 +270,9 @@ All messages are Trystero actions created with `room.makeAction(name)`.
 | `react` | broadcast | `{emoji}` | Floating emoji reaction |
 | `meta` | targeted on every join, + broadcast | `{name, joinedAt, fingerprint, fileName, duration}` | Identity, roster and host election. `joinedAt` is the sender's wall clock |
 | `av` | targeted on every join, + broadcast on toggle | `{mic: boolean, cam: boolean}` | Mic/camera state, drawn as a 🔇 badge and the camera-off placeholder on that person's tile. Cosmetic only — nothing in sync depends on it |
+| `phase` | targeted on every join, + broadcast on change | `{phase: 'lobby'\|'playing', policy: {control: 'everyone'\|'host', allowLate: boolean}}` | Whether the film has started, plus the host's policy. **Only the host's copy counts** |
+| `knock` | targeted → host | `{name}` | "The movie has started, please let me in." Sent by someone who has NOT sent `meta` yet |
+| `verdict` | targeted → knocker | `{allowed: boolean, reason?: 'closed'}` | The host's answer. `reason: 'closed'` means late joining is switched off, not that they were personally refused |
 
 | `ping` | request/response | `→ n`, `← n` | RTT probe. Uses `kind: 'request'` |
 
@@ -213,6 +287,34 @@ clocks are not synchronised) — only the RTT-derived `oneWay` estimate is used 
 ## Gotchas & learnings
 
 > Append to this as new ones are hit. Each one here cost real debugging time.
+
+**A `const` used by a function that runs early in the same scope throws — and the symptom looks
+like a completely unrelated feature being broken.** *(Hit three times in one sitting while building
+the entrance flow.)* `main.js` is one long function that calls `admit()` near the top and declares
+helpers further down. `const tag = ...`, `const shareLink = ...` and `let cameraOnAt` were all
+still in their temporal dead zone when the early code reached them, and the resulting
+`ReferenceError` propagated silently out of a promise: the stage appeared but the waiting room did
+not, and clicking "Join room" did nothing because `enterSetup()` had thrown halfway through, after
+setting the title but before `showCard()`. Nothing appeared in the console — the error surfaced
+only in the `.catch()` that writes to `#lobbyError`, on a card that was hidden.
+**Rules:** anything reachable from `admit()` or from module top-level is a `function` declaration,
+not a `const` arrow; state written by early code is declared at the very top of the scope; and the
+one top-level bootstrap call (`if (urlRoom) enterSetup('join')`) is the last statement in its
+section, not the first.
+
+**`position: static` on a tile strands its label at the corner of the screen.** *(Caught in a
+screenshot, not by any assertion.)* The waiting-room grid neutralises the floating layout with
+`position: … !important` — necessary, because `placeTile()` writes `left`/`top` inline and only an
+important declaration outranks an inline one. The first attempt used `static`, which removes the
+tile as a containing block, so `.tile-label` and `.tile-badges` — both `position: absolute` — leapt
+up to `#tiles` and rendered at the far left of the stage, detached from the face they name. Use
+`relative`, and neutralise `left`/`top`/`right` explicitly or the inline values come back as
+relative nudges. **Never make an element `static` when its children are positioned against it.**
+
+**Browsers cache `style.css` hard enough to fake a broken CSS fix.** After changing the tile rule,
+the computed style still read the *previous* value through several reloads, which reads exactly like
+an `!important` that isn't winning. `location.reload(true)` or a cache-busting query confirms which
+it is. Check this before rewriting a selector that was already correct.
 
 **A stale window on your own machine will impersonate your partner.** *(Cost an entire evening.)*
 Trystero connects you to every peer in the room, including a Movie Watch window you left open in
@@ -370,6 +472,25 @@ replace `,` with `.` in timestamps.
 
 ## Known issues
 
+**The camera now renegotiates every session, by design.** The waiting room calls `call.enable()`
+automatically, so every session adds a media stream to every peer connection where previously the
+default was data-only. On a network pair that needs TURN this can break a link that was working.
+It is deliberate (see the decision log), it happens at the least damaging moment, and it announces
+itself with a **Rejoin without video** button — but it is a real, accepted regression in
+robustness, and it is the first thing to suspect if a session that used to work stops working.
+
+**The door is a doorbell, not a lock.** A late joiner is connected at the data layer before they
+knock, and *Let people join after the movie starts* is honoured by their client, not enforced by
+ours. Nothing short of a server could change that. Fine for a group of friends; do not describe it
+as access control.
+
+**Three peers in one headless browser will not stay meshed.** During verification, two background
+tabs lost their peer connections entirely and each re-elected itself host, because Chrome throttles
+background tabs hard enough to stall Trystero's signaling and time out ICE. Only the foreground tab
+stayed healthy. Every multi-peer check has to be read *while the tabs are connected*; a stale
+reading after tab-switching says nothing. Not a product bug — real people have their own windows —
+but it makes automated multi-peer testing unreliable past two tabs.
+
 **No real camera or microphone has ever been used.** Headless Chrome has none, so every camera
 test substitutes a canvas `captureStream` for video and an oscillator for audio. That exercises
 the real code path end to end — auto-duck, speaking indicators, tile drag/resize, badges — but it
@@ -411,8 +532,14 @@ Read the Settings (⚙) rows to tell the cases apart:
    room: 0`) or the connection reports `failed`. `TURN` in `net.js` is empty.
    Metered (metered.ca) gives 50GB/month free with no card and hands back exactly the shape the
    commented-out block expects.
-3. **Verify the camera fix on two real machines** once TURN is in. The `addStream` fix is proven
-   against a synthetic stream but has not run with a real webcam across the internet.
+3. **Verify the camera on two real machines** once TURN is in — now more urgent than it was, since
+   the camera is no longer opt-in and every session renegotiates. If it turns out to break
+   cross-network links routinely, the fix is not to bring the checkbox back but to negotiate the
+   media transceivers up front (a silent placeholder stream at join, swapped for the real tracks
+   with Trystero's `replaceTrack`), which avoids renegotiation entirely.
+4. **Try the waiting room with real people.** It has only ever been driven by a script. The open
+   questions are whether 12s feels too long to wait on the "looking for room" card, and whether a
+   host watching a film actually notices the corner join-request card.
 4. **Check `SPEAK_THRESHOLD` (0.045) against a real microphone.** Every speaking-indicator test so
    far has used an oscillator at a fixed level, which says nothing about whether a normal speaking
    voice crosses the line — or whether movie audio bleeding into the mic crosses it constantly.
@@ -426,6 +553,39 @@ Read the Settings (⚙) rows to tell the cases apart:
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-27 — a room you enter: create/join, a waiting room, and host approval
+
+The entrance is no longer a single form. The app now has a front door, a place to stand around in
+before the film, and a way for the host to answer it.
+
+- **Create a room / Join a room** on landing, then a setup card, then a live status card. A
+  `?room=` link skips the choice and opens the join form directly — a shared link must never make
+  someone pick.
+- **"That room doesn't exist."** Joining probes for 12s for any peer and says so if nobody answers,
+  with **Try again** and **Back** (which calls `net.leave()`, so an abandoned attempt cannot linger
+  as a ghost). With no server, room existence can only mean "somebody is in it right now".
+- **A waiting room.** `#stage` gains `.phase-lobby` and shows an overlay with the room code, a copy
+  link, the roster, and the host's **▶ Start the movie**. Chat, reactions, cameras and the roster
+  are all live in there; playback controls are disabled with a reason on hover. Everyone's tiles
+  lay out in a grid so faces are the biggest thing on screen, then return to floating for the film.
+- **Knock to enter.** Arriving after the start sends a request to the host, who gets a small corner
+  card — *"Carol wants to join"* — with Allow / Not now. Approved arrivals are pulled to the host's
+  position. Multiple requests queue.
+- **Host controls** in the roster panel: *Let people join after the movie starts* (off means the
+  host is never interrupted, the knocker is told the room is closed) and *Who can control playback*
+  (Everyone, unchanged default, or Host only — enforced on receive as well as on send).
+- **The camera opt-in checkbox is gone.** The camera comes on in the waiting room and 📷/🎙 toggle
+  it at any moment, including mid-film. A connection failure within 20s of a camera going on now
+  names the camera and offers **Rejoin without video**. See the reversed decision above.
+- **Subtitles are genuinely loadable later.** CC with no track goes straight to the file picker
+  instead of opening Settings, and a `.srt`/`.vtt` can be dropped anywhere on the video.
+- **Click outside a panel to close it.** The control bar is exempt (reaching for the volume slider
+  is not a dismissal) and so is each panel's own button, or the dismiss and the toggle cancel out.
+  Opening a panel now closes the others instead of stacking them invisibly.
+- `startAllBtn` relabelled **Bring everyone to my position**, now that "Start the movie" exists
+  separately.
+- Three new gotchas recorded, all found during this work.
 
 ### 2026-07-27 — video tiles: drag anywhere, mute badge, fade and size
 

@@ -9,11 +9,43 @@
 </head>
 <body>
 
-<!-- ══════════════════════════ LOBBY ══════════════════════════ -->
+<!-- ══════════════════════════ LOBBY ══════════════════════════
+     Three cards, one visible at a time: choose what you're doing, fill in the
+     details, then watch the connection happen. All toggled with `hidden`, which
+     works only because of the `[hidden] { display: none !important }` rule in
+     style.css — read the comment there before adding any `display` rule here. -->
 <section id="lobby" class="lobby">
-  <div class="lobby-card">
+
+  <!-- ─────────── Landing: create or join ─────────── -->
+  <div class="lobby-card" id="landingCard">
     <h1>🍿 Movie Watch</h1>
     <p class="tagline">Same movie, same moment, from anywhere.</p>
+
+    <div class="choice">
+      <button class="choice-btn" id="createChoice" type="button">
+        <span class="choice-icon">🎬</span>
+        <span class="choice-text">
+          <b>Create a room</b>
+          <span class="hint">Start a watch party and share the link</span>
+        </span>
+      </button>
+
+      <button class="choice-btn" id="joinChoice" type="button">
+        <span class="choice-icon">🔗</span>
+        <span class="choice-text">
+          <b>Join a room</b>
+          <span class="hint">Someone gave you a room code</span>
+        </span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ─────────── Setup: name, code, files ─────────── -->
+  <div class="lobby-card" id="setupCard" hidden>
+    <button class="back-link" id="setupBack" type="button">← Back</button>
+
+    <h1 id="setupTitle">Create a room</h1>
+    <p class="tagline" id="setupTagline">Pick your movie file and you're in.</p>
 
     <div class="field">
       <label for="displayName">Your name</label>
@@ -21,7 +53,7 @@
     </div>
 
     <div class="field">
-      <label for="roomCode">Room code <span class="hint">— you both need the same one</span></label>
+      <label for="roomCode">Room code <span class="hint">— everyone needs the same one</span></label>
       <div class="row">
         <input type="text" id="roomCode" placeholder="movie-night" autocomplete="off">
         <button id="copyLink" class="btn-secondary" type="button" title="Copy the share link">Copy link</button>
@@ -36,22 +68,9 @@
     </div>
 
     <div class="field">
-      <label for="subFile">Subtitles <span class="hint">— optional, .srt or .vtt, only yours</span></label>
+      <label for="subFile">Subtitles <span class="hint">— optional, and you can add them later with CC</span></label>
       <input type="file" id="subFile" accept=".srt,.vtt,text/vtt">
       <p class="file-status" id="subStatus"></p>
-    </div>
-
-    <!-- Off by default on purpose. Sending a camera stream forces an ICE
-         renegotiation, and without a TURN relay that can kill an otherwise healthy
-         peer connection — taking chat, reactions and playback sync down with it.
-         Leaving this unticked keeps the connection data-only and robust. -->
-    <div class="field">
-      <label class="check">
-        <input type="checkbox" id="useCamera">
-        <span>Turn on camera and mic
-          <span class="hint">— off by default; sync and chat are more reliable without it</span>
-        </span>
-      </label>
     </div>
 
     <details class="checklist">
@@ -67,15 +86,30 @@
       </ul>
     </details>
 
-    <button id="joinBtn" class="btn-primary" type="button" disabled>Join room</button>
+    <button id="joinBtn" class="btn-primary" type="button" disabled>Create room</button>
     <p class="lobby-error" id="lobbyError" hidden></p>
   </div>
+
+  <!-- ─────────── Status: connecting, not found, knocking ─────────── -->
+  <div class="lobby-card status-card" id="statusCard" hidden>
+    <div class="spinner" id="statusSpinner"></div>
+    <h2 id="statusTitle">Looking for the room…</h2>
+    <p class="status-body" id="statusBody"></p>
+    <div class="status-actions" id="statusActions" hidden>
+      <button id="statusRetry" class="btn-primary" type="button">Try again</button>
+      <button id="statusBack" class="btn-secondary full" type="button">Back</button>
+    </div>
+  </div>
+
 </section>
 
 <!-- ══════════════════════════ PLAYER ══════════════════════════ -->
 <!-- NOTE: #stage is the fullscreen target, NOT the <video>.
      Fullscreen only renders the fullscreened element and its descendants,
-     so the webcam tiles / chat / controls must live inside it. -->
+     so the webcam tiles / chat / controls must live inside it.
+
+     #stage also carries the phase: `.phase-lobby` while everyone is gathering in
+     the waiting room, and no phase class once the movie is running. -->
 <section id="stage" class="stage" hidden>
 
   <video id="movie" class="movie" playsinline></video>
@@ -83,15 +117,59 @@
   <!-- Banners -->
   <div class="banners" id="banners"></div>
 
-  <!-- Webcam tiles. Peer tiles are created at runtime into this container, one per
-       person — the room holds up to six and we don't know who until they arrive. -->
-  <div id="peerTiles"></div>
+  <!-- Webcam tiles — YOURS AND THEIRS, in one container.
+       Peer tiles are created at runtime, one per person; the room holds up to six
+       and we don't know who until they arrive. Your own tile lives in here too so
+       the waiting room can lay every face out in a single grid; during the movie
+       they all go back to floating freely over the video. -->
+  <div id="tiles">
+    <div class="tile" id="selfTile" data-tile="self" hidden>
+      <video id="selfVideo" autoplay playsinline muted></video>
+      <span class="tile-label">You</span>
+      <span class="tile-badges"></span>
+      <div class="tile-resize" data-resize="self"></div>
+    </div>
+  </div>
 
-  <div class="tile" id="selfTile" data-tile="self" hidden>
-    <video id="selfVideo" autoplay playsinline muted></video>
-    <span class="tile-label">You</span>
-    <span class="tile-badges"></span>
-    <div class="tile-resize" data-resize="self"></div>
+  <!-- ─────────── Waiting room ───────────
+       Shown over the not-yet-started movie while the room fills up. Everything
+       else on the stage — chat, reactions, roster, tiles, settings — is live
+       behind it, which is the whole point: this is a place to hang around in. -->
+  <div class="green-room" id="greenRoom" hidden>
+    <div class="green-card">
+      <h2>Waiting room</h2>
+      <p class="green-sub">The movie hasn't started yet — say hello while everyone arrives.</p>
+
+      <div class="green-code">
+        <span class="hint">Room</span>
+        <code id="greenCode">—</code>
+        <button id="greenCopy" class="btn-secondary" type="button">Copy link</button>
+      </div>
+
+      <ul class="roster" id="greenRoster"></ul>
+
+      <button id="startMovieBtn" class="btn-primary" type="button" hidden>▶ Start the movie</button>
+      <p class="green-wait" id="greenWait"></p>
+
+      <p class="hint green-tips">
+        💬 chat and 😀 reactions work in here · 📷 turns your camera on and off at any
+        time, including mid-movie · forgot subtitles? press <b>CC</b> whenever you like
+      </p>
+    </div>
+  </div>
+
+  <!-- ─────────── "X wants to join" (host only) ───────────
+       Deliberately a small corner card rather than a modal: the host is watching a
+       film, and a dialog across the middle of it would be worse than the problem
+       it solves. Nothing pauses while this is up. -->
+  <div class="join-request" id="joinRequest" hidden>
+    <p class="jr-title"><b id="jrName">Someone</b> wants to join</p>
+    <p class="jr-sub">The movie has already started.</p>
+    <div class="jr-actions">
+      <button id="jrAllow" class="btn-primary small" type="button">Allow</button>
+      <button id="jrDeny" class="btn-secondary" type="button">Not now</button>
+    </div>
+    <p class="hint" id="jrQueue" hidden></p>
   </div>
 
   <!-- Floating chat bubbles + reactions -->
@@ -124,19 +202,21 @@
         <span class="ctl-tag">just you</span>
       </div>
 
-      <!-- data-needs-camera: hidden when watching without cameras, since these
-           controls would have nothing to act on. -->
-      <div class="ctl-group" data-needs-camera title="Their voice volume — only affects you">
+      <div class="ctl-group" title="Their voice volume — only affects you">
         <span class="ctl-icon">🗣</span>
         <input type="range" id="voiceVolume" class="slider" min="0" max="1" step="0.01" value="1">
         <span class="ctl-tag">just you</span>
       </div>
 
-      <span class="divider" data-needs-camera></span>
+      <span class="divider"></span>
 
-      <button id="micBtn" class="ctl" data-needs-camera title="Mute / unmute your mic (M)">🎙</button>
-      <button id="camBtn" class="ctl" data-needs-camera title="Camera on / off">📷</button>
-      <button id="duckBtn" class="ctl active" data-needs-camera title="Auto-lower movie volume when they speak">🔉</button>
+      <!-- Always present. There is no camera opt-in any more: the first press of
+           either of these acquires the camera, and both keep working at any point
+           in the session, so nobody is locked out of video by a box they forgot
+           to tick. -->
+      <button id="micBtn" class="ctl" title="Mute / unmute your mic (M)">🎙</button>
+      <button id="camBtn" class="ctl" title="Camera on / off">📷</button>
+      <button id="duckBtn" class="ctl active" title="Auto-lower movie volume when they speak">🔉</button>
 
       <span class="divider"></span>
 
@@ -161,26 +241,52 @@
     </div>
   </div>
 
-  <!-- ─────────── Room roster ─────────── -->
-  <div class="panel roster-panel" id="rosterPanel" hidden>
+  <!-- ─────────── Room roster ───────────
+       `data-owner` names the button that opens this panel, so the click-outside
+       dismissal in ui.js leaves that button alone — otherwise the dismiss and the
+       button's own toggle cancel out and the button looks broken. -->
+  <div class="panel roster-panel" id="rosterPanel" data-owner="rosterBtn" hidden>
     <div class="panel-head">
       <h3>In this room</h3>
       <button class="panel-close" data-close="rosterPanel">✕</button>
     </div>
     <div class="panel-body">
       <ul class="roster" id="rosterList"></ul>
-      <!-- Only the host sees this. Pulls everyone to the host's position and plays,
-           so the movie genuinely starts at the same moment for the whole room. -->
-      <button id="startAllBtn" class="btn-primary" hidden>▶ Start for everyone</button>
+      <!-- Host only. Pulls everyone to the host's position and plays, so a room
+           that has drifted apart or half-paused comes back together. -->
+      <button id="startAllBtn" class="btn-primary" hidden>▶ Bring everyone to my position</button>
       <p class="hint" id="rosterHint"></p>
+
+      <!-- Host only. Placed here rather than behind a new control-bar button
+           because the roster panel is already "the room", and a fifth icon in the
+           bar costs more than it returns. -->
+      <div id="hostControls" hidden>
+        <hr>
+        <h4>Host controls <span class="hint">only you</span></h4>
+
+        <label class="field-inline">
+          <span>Let people join after the movie starts
+            <span class="hint">you'll be asked each time</span>
+          </span>
+          <input type="checkbox" id="allowLate" checked>
+        </label>
+
+        <label class="field-inline">
+          <span>Who can control playback</span>
+          <select id="controlPolicy">
+            <option value="everyone">Everyone</option>
+            <option value="host">Host only</option>
+          </select>
+        </label>
+      </div>
     </div>
   </div>
 
   <!-- ─────────── Emoji picker ─────────── -->
-  <div class="emoji-picker" id="emojiPicker" hidden></div>
+  <div class="emoji-picker" id="emojiPicker" data-owner="reactBtn" hidden></div>
 
   <!-- ─────────── Settings panel ─────────── -->
-  <div class="panel settings-panel" id="settingsPanel" hidden>
+  <div class="panel settings-panel" id="settingsPanel" data-owner="settingsBtn" hidden>
     <div class="panel-head">
       <h3>Settings</h3>
       <button class="panel-close" data-close="settingsPanel">✕</button>
@@ -204,6 +310,10 @@
       <hr>
 
       <h4>Subtitles <span class="hint">only you</span></h4>
+      <p class="hint">
+        Load these whenever you like — press <b>CC</b> in the control bar, or drop a
+        <code>.srt</code> anywhere on the video.
+      </p>
       <label class="field-inline">
         <span>Load a file</span>
         <input type="file" id="subFileLive" accept=".srt,.vtt,text/vtt">
@@ -223,24 +333,21 @@
 
       <hr>
 
-      <!-- Camera-only: with no tiles on screen these sliders control nothing. -->
-      <div data-needs-camera>
-        <h4>Video tiles <span class="hint">only you</span></h4>
-        <p class="hint">
-          Faded tiles come back to full strength while that person is speaking, and
-          whenever you hover over them.
-        </p>
-        <label class="field-inline">
-          <span>Fade</span>
-          <input type="range" id="tileOpacity" min="0.15" max="1" step="0.05" value="1">
-        </label>
-        <label class="field-inline">
-          <span>Size</span>
-          <input type="range" id="tileSize" min="110" max="460" step="10" value="200">
-        </label>
+      <h4>Video tiles <span class="hint">only you</span></h4>
+      <p class="hint">
+        Faded tiles come back to full strength while that person is speaking, and
+        whenever you hover over them.
+      </p>
+      <label class="field-inline">
+        <span>Fade</span>
+        <input type="range" id="tileOpacity" min="0.15" max="1" step="0.05" value="1">
+      </label>
+      <label class="field-inline">
+        <span>Size</span>
+        <input type="range" id="tileSize" min="110" max="460" step="10" value="200">
+      </label>
 
-        <hr>
-      </div>
+      <hr>
 
       <h4>Diagnostics</h4>
       <dl class="diag">
@@ -261,7 +368,7 @@
   </div>
 
   <!-- ─────────── Chat panel ─────────── -->
-  <div class="panel chat-panel" id="chatPanel" hidden>
+  <div class="panel chat-panel" id="chatPanel" data-owner="chatBtn" hidden>
     <div class="panel-head">
       <h3>Chat</h3>
       <button class="panel-close" data-close="chatPanel">✕</button>
