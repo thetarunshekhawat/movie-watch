@@ -339,6 +339,24 @@ of the defaults are console noise, not a functional problem; redundancy exists t
 Leave relay selection alone unless you can test end-to-end discovery, from two networks, against
 any replacement list.
 
+**Which relays are in play is derivable, so measure them instead of guessing.** Trystero picks
+five (`redundancy: 5`) from its 47 defaults by seeded shuffle, and the seed is the sum of the
+`appId` character codes — deterministic, so every peer in the app lands on the *same* five. For
+`movie-watch-p2p-v1` (seed `1655`) they are `social.amanah.eblessing.co`, `nostr.vulpem.com`,
+`schnorr.me`, `testnet-relay.samt.st` and `relay-can.zombi.cloudrodion.com`. This kills a whole
+class of wrong theory: peers cannot "draw disjoint relay subsets and miss each other", because the
+subset is not random per peer. It also means relay health is a five-line check — open each socket,
+publish a signed ephemeral event on a `#x` topic, and see whether your own subscription receives
+it back. A relay that accepts the socket but never echoes is a dud; a relay that echoes works. Do
+that before blaming relays for anything.
+
+**"Peer discovered" and "peer connected" are different events, and only the second one counts.**
+`net.peerCount` rises on `room.onPeerJoin`, which Trystero fires once the WebRTC data channel is
+open — after signaling, ICE, and DTLS. Nothing in this app observes discovery on its own. So any
+code that treats `peerCount === 0` as "the room is empty" is really saying "no fully connected
+peer", and will blame the room for what is actually a network-path failure. `joinExisting()` does
+exactly this today; see **Known issues**.
+
 **A zero-height wrapper silently pins an absolutely-positioned child to the top edge.** *(This is
 why peer tiles could only ever be dragged sideways.)* `#peerTiles` was an unstyled `<div>`, so it
 had height 0 — but the tiles inside it are `position: absolute`, so they were laid out against
@@ -501,14 +519,49 @@ banner and sync keeps working.
 **Fullscreen overlay is unverified.** The code deliberately fullscreens the `#stage` container
 rather than the `<video>`, which is the documented fix, but this has not been observed working.
 
+**TURN is required on this network, and its absence is reported as "Room doesn't exist".**
+*(Measured 2026-07-27 — this replaces the previous "no evidence either way" note.)* A real
+cross-network attempt failed: the host sat in the waiting room on Chrome/Windows while the joiner
+on Safari/macOS got `Room “movie-jt523c” doesn't exist`. The room existed. The two browsers simply
+could not build a peer connection, and `joinExisting()` cannot tell those two cases apart — see the
+next entry. Evidence gathered from the joining machine:
+
+- **The network hands out a different public IP per flow.** One `RTCPeerConnection`, one local port
+  (`61143`), produced *two* srflx candidates at once: `103.114.167.242` and `122.15.199.237`. A
+  third, `43.255.222.130`, appeared in UDP probes from the same socket. The machine sits on
+  `10.10.40.0/21` behind a shared gateway with many neighbours — an institutional CGNAT with
+  several WAN uplinks, load-balanced per flow.
+- **NAT filtering is address-and-port-dependent** (RFC 5780 test against `stun.miwifi.com`: replies
+  from a different IP *and* from a different port were both dropped).
+
+Together those two are fatal without a relay. The joiner advertises, say,
+`122.15.199.237:61143`; the host's connectivity checks arrive at a gateway holding no mapping for
+the host and are dropped. The joiner's own checks leave via a *different* WAN IP than the one it
+advertised, so they arrive at the host from an unexpected source address and are dropped by the
+host's own address-restricted filter. Neither direction ever completes, ICE never succeeds,
+`onPeerJoin` never fires. This is precisely the case `TURN` exists for, and `TURN` in `net.js` is
+an empty array.
+
+Ruled out while diagnosing, so nobody re-treads it: all five Nostr relays this app derives from its
+`appId` were reachable and correctly forwarded ephemeral events (publish → subscribe round trip);
+their TLS certificates were all valid; the network is *not* symmetric NAT (port mapping is
+preserved); and peer discovery itself is fast — two browsers on one machine reached `onPeerJoin` in
+**1.5 s**, so the 12 s probe window has ample headroom and is not the problem.
+
+**"Room doesn't exist" is a misdiagnosis, not a message.** `joinExisting()` in `main.js` waits
+`ROOM_PROBE_MS` for `net.peerCount > 0`, and `peerCount` only rises on `room.onPeerJoin` — which
+fires after a **fully established WebRTC data channel**, not after discovery. So every transport
+failure downstream of discovery — ICE failure, no TURN, a dead relay, a firewall — surfaces to the
+user as the confident and wrong claim that nobody is in the room. The two states worth separating
+are "no announce ever seen" (really empty) and "found them, could not connect" (a network route
+problem). Until they are, this message will keep sending people to check a room code that was
+correct all along.
+
 **One Nostr relay throws cert errors.** `wss://schnorr.me/` fails with
 `ERR_CERT_AUTHORITY_INVALID` and spams the console. Harmless — Trystero connects through the other
-relays — but it makes the console noisy when debugging.
-
-**The two machines have never yet connected to each other.** Every session so far ended with each
-browser talking to a stale window on its own laptop (see the ghost-peer gotcha). So there is still
-**no evidence either way** about whether a direct cross-network path works, and none about whether
-TURN is needed. `TURN` in `net.js` is an empty array.
+relays — but it makes the console noisy when debugging. *(Checked 2026-07-27: the certificate now
+chains to Google Trust Services WE1 and is valid. This may have been fixed upstream; treat a
+recurrence as relay-side churn, not as an app problem.)*
 
 Read the Settings (⚙) rows to tell the cases apart:
 
@@ -524,14 +577,17 @@ Read the Settings (⚙) rows to tell the cases apart:
 
 ## Next steps
 
-1. **Re-test with every other Movie Watch window closed on both machines.** Quit both browsers
-   completely first — that is the only way to be sure no ghost survives. Then check the **Path**
-   row: anything other than `host/host` means the two laptops have genuinely found each other.
-   Only once that is true is there any evidence about whether TURN is needed.
-2. **Add a TURN server** if, with ghosts gone, the two machines still never connect (`Peers in
-   room: 0`) or the connection reports `failed`. `TURN` in `net.js` is empty.
-   Metered (metered.ca) gives 50GB/month free with no card and hands back exactly the shape the
-   commented-out block expects.
+1. **Add a TURN server. This is now the blocker, not a contingency.** The 2026-07-27 measurement
+   (see **Known issues**) showed the joining network cannot hold a direct path: per-flow WAN load
+   balancing plus address-and-port-dependent filtering. No amount of retrying fixes that; only a
+   relay does. Metered (metered.ca) gives 50GB/month free with no card and hands back exactly the
+   shape the commented-out block in `net.js` expects. Paste the credentials into `TURN`, then
+   confirm the Settings **Path** row reads `relay/…` on the pair that used to fail.
+2. **Stop reporting connection failure as "Room doesn't exist".** `joinExisting()` should
+   distinguish "no announce ever seen" from "found them, could not connect". The cheapest honest
+   split: keep waiting for `net.peerCount`, but if `room.getPeers()` has entries whose
+   `connectionState` is `connecting`/`failed`, say so — the room was found, the network route was
+   not — and point at TURN rather than at the room code.
 3. **Verify the camera on two real machines** once TURN is in — now more urgent than it was, since
    the camera is no longer opt-in and every session renegotiates. If it turns out to break
    cross-network links routinely, the fix is not to bring the checkbox back but to negotiate the
@@ -540,19 +596,54 @@ Read the Settings (⚙) rows to tell the cases apart:
 4. **Try the waiting room with real people.** It has only ever been driven by a script. The open
    questions are whether 12s feels too long to wait on the "looking for room" card, and whether a
    host watching a film actually notices the corner join-request card.
-4. **Check `SPEAK_THRESHOLD` (0.045) against a real microphone.** Every speaking-indicator test so
+5. **Check `SPEAK_THRESHOLD` (0.045) against a real microphone.** Every speaking-indicator test so
    far has used an oscillator at a fixed level, which says nothing about whether a normal speaking
    voice crosses the line — or whether movie audio bleeding into the mic crosses it constantly.
-5. Consider reordering/pinning Nostr relays to drop the ones with bad certificates
-   (`schnorr.me`, `relay.agorist.space`).
 6. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
    sessions, so the movie doesn't have to be re-picked every time.
+
+*Dropped from this list: "re-test with every window closed to rule out ghost peers" and "add TURN
+**if** the machines still fail". Both are answered — the cross-network attempt was real, not a
+ghost, and it failed. Relay selection is also settled: the five relays this `appId` derives were
+each verified to forward ephemeral events, so reordering or pinning them fixes nothing.*
 
 ---
 
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-27 — the cross-network answer: TURN is required, and its absence lies about the room
+
+A real attempt between two machines on different networks failed: the host sat in the waiting room
+on Chrome/Windows while the joiner on Safari/macOS was told `Room “movie-jt523c” doesn't exist`.
+The room existed. This is the first genuine cross-network attempt on record — every previous one
+turned out to be a browser talking to a ghost window on its own laptop — so it finally settles the
+question the last three entries left open.
+
+**What it is.** The joining network hands out a *different public IP per flow*: one
+`RTCPeerConnection` on one local port produced srflx candidates for both `103.114.167.242` and
+`122.15.199.237`, and a third address appeared on the same socket in UDP probes. Filtering is
+address-and-port-dependent (RFC 5780 test: replies from a different IP, and from a different port,
+were both dropped). A peer therefore cannot reach the address the joiner advertises, and the
+joiner's own checks arrive from an address the peer never expected. ICE cannot close that loop
+without a relay, and `TURN` in `net.js` is empty.
+
+**What it is not.** Ruled out, so nobody re-treads them: the five Nostr relays this `appId` derives
+were each verified to forward ephemeral events end to end; their TLS certificates are all valid
+(`schnorr.me` included — its cert error appears to have been fixed upstream); the NAT is not
+symmetric; and discovery is fast — two browsers on one machine reached `onPeerJoin` in 1.5s, so the
+12s probe window is not the constraint.
+
+**The second bug, which hid the first.** `joinExisting()` waits for `net.peerCount > 0`, and
+`peerCount` only moves on `room.onPeerJoin` — which fires after a *fully established* data channel.
+Discovery succeeding and the connection failing is indistinguishable, at that call site, from
+nobody being there. So a network-route failure is reported as a confidently wrong claim about the
+room code, sending people to re-check something that was correct. Recorded in **Known issues**;
+the fix is **Next steps** item 2.
+
+No code changed in this entry — it is a measurement. **Next steps** are re-ordered around it:
+adding TURN is now the blocker rather than a contingency.
 
 ### 2026-07-27 — a room you enter: create/join, a waiting room, and host approval
 
