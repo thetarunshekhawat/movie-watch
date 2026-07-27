@@ -250,10 +250,20 @@ one)` so two or three read as large and the rest shrink away along the bottom an
 It advances on its own, holding each composition for a moment and then stepping, and it is removed
 entirely the instant the film starts so nothing competes with the movie.
 
-**The stills are not in this repository, and that is deliberate.** Film frames are studio
+**No film frame is stored in this repository, and that is deliberate.** Stills are studio
 copyright; this repo is public and deploys to a public site, so committing a hundred of them would
-be redistribution. `img/frames/` is gitignored. Two supported ways to fill it — both write to the
-exact paths [`js/frames-data.js`](js/frames-data.js) already expects, so neither needs any editing:
+be redistribution. What ships instead is [`js/frames-urls.js`](js/frames-urls.js) — a generated
+list of URLs pointing at TMDB's CDN, which is what their API is for. Nothing is stored or re-served
+by us, and the live site gets its pictures.
+
+To refresh or change the film list, regenerate it:
+
+```bash
+TMDB_API_KEY=xxxx node tools/fetch-stills.mjs --urls
+```
+
+Two other ways to fill the stack, both writing to the paths
+[`js/frames-data.js`](js/frames-data.js) already expects:
 
 **A. From your own copies of the films.** The better-looking option: you pick the exact moment
 rather than accepting whatever was in the press kit, and nothing leaves your machine.
@@ -263,12 +273,16 @@ tools/grab-frames.sh ~/films/Interstellar.mkv interstellar \
     00:52:14 01:32:07 02:12:40 02:41:55
 ```
 
-**B. From TMDB**, which licenses stills for exactly this use. Free key, no card:
+**B. Download from TMDB** instead of hot-linking, if you would rather the app worked with no
+network at all:
 
 ```bash
-TMDB_API_KEY=xxxx node tools/fetch-stills.mjs           # download into img/frames/
-TMDB_API_KEY=xxxx node tools/fetch-stills.mjs --urls    # hot-link the CDN instead
+TMDB_API_KEY=xxxx node tools/fetch-stills.mjs
 ```
+
+Local files under `img/frames/` are gitignored, so they stay on your machine and do **not** reach
+the deployed site. A film listed in `js/frames-urls.js` uses its URL; delete that film's entry to
+fall back to your own local frames.
 
 Both are one-off tools you run by hand — the app itself still has no build step and no npm
 dependencies.

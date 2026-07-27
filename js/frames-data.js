@@ -32,6 +32,8 @@
  *  someone who has not would still find arresting.
  */
 
+import { STILL_URLS } from './frames-urls.js';
+
 const FILMS = [
   { title: 'The Shawshank Redemption',        year: 1994, director: 'Frank Darabont',      slug: 'shawshank-redemption',  stills: 4 },
   { title: '12 Angry Men',                    year: 1957, director: 'Sidney Lumet',        slug: '12-angry-men',          stills: 4 },
@@ -62,15 +64,30 @@ const FILMS = [
 ];
 
 /**
- * Expanded to one entry per still. `src` is a convention, not a promise — the
- * file may not exist yet, and the engine handles that.
+ * Expanded to one entry per still.
+ *
+ * `src` resolves in one of two ways, and neither stores a film frame in this
+ * repository:
+ *
+ *   1. A URL from js/frames-urls.js, if that film has been fetched. Those
+ *      point at TMDB's CDN — regenerate with
+ *      `TMDB_API_KEY=... node tools/fetch-stills.mjs --urls`.
+ *   2. Otherwise a local path under img/frames/ (gitignored), which is where
+ *      tools/grab-frames.sh writes. Present on your machine, absent on the
+ *      deployed site.
+ *
+ * Either way `src` is a convention, not a promise: nothing may be there, and
+ * the engine draws a titled slate when that happens.
+ *
+ * To prefer your own extracted frames over TMDB's for one film, delete that
+ * film's entry from js/frames-urls.js — the local path takes over.
  */
 export const FRAMES = FILMS.flatMap(f =>
   Array.from({ length: f.stills }, (_, i) => ({
     title: f.title,
     year: f.year,
     director: f.director,
-    src: `img/frames/${f.slug}-${i + 1}.jpg`,
+    src: STILL_URLS[f.slug]?.[i] || `img/frames/${f.slug}-${i + 1}.jpg`,
   }))
 );
 
