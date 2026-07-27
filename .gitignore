@@ -14,3 +14,8 @@
 *.vtt
 
 .DS_Store
+
+# Film stills. Studio-copyrighted — populated locally via tools/, never
+# committed, and never redistributed from the public Pages deployment.
+img/frames/
+img/frames-urls.json

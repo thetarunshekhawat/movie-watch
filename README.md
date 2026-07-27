@@ -1,4 +1,4 @@
-# 🍿 Movie Watch
+# Movie Watch
 
 Watch a movie with your friends, from anywhere, in perfect sync. Up to about six people per room.
 
@@ -9,18 +9,19 @@ full quality, and it works even on slow internet.
 - **Create a room** or **join** one with a code — joining a room nobody's in tells you so
 - A **waiting room** where everyone gathers, chats and sees each other before the film starts
 - Anyone pauses, it pauses for everyone
-- A roster (👥) showing exactly who's in the room, and who's hosting
+- A **Room** panel showing exactly who's in the room, and who's hosting
 - Arrive after the movie started? You **ask to join**, and the host gets a prompt
 - Host controls: allow or refuse late arrivals, and restrict playback to yourself
 - Chat and emoji reactions over the movie, without pausing it
 - **Volume and subtitles are yours alone** — load subtitles at any point, even mid-film
 - Webcams that go on and off whenever you like, with the movie ducking when someone talks
 
-> **A note on cameras.** Your camera comes on in the waiting room, and 📷 toggles it at any time.
-> Turning a camera on renegotiates the peer connection, and with no TURN relay configured that can
-> break a link that was working — which is why it happens in the waiting room, while people are
-> still saying hello, rather than an hour into the film. If the connection drops right after,
-> the app says so and offers to rejoin without video.
+> **A note on cameras.** Your camera comes on in the waiting room, and the camera button toggles it at any time.
+> Turning a camera on renegotiates the peer connection, which can break a link that was working —
+> which is why it happens in the waiting room, while people are still saying hello, rather than an
+> hour into the film. If the connection drops right after, the app says so and offers to rejoin
+> without video. There is a TURN relay configured now, which should make this much rarer than it
+> was.
 
 There is **no server**. Just a web page.
 
@@ -84,7 +85,7 @@ Send that link to the other person once. It never expires, so they can bookmark 
    their own copy of the movie, and hits **Join room**.
 4. You're all in the **waiting room**. Chat, wave at each other, sort out who's still getting snacks.
 5. Check the roster: everyone you expect should be listed, with one **HOST**.
-6. The host presses **▶ Start the movie**. Everyone starts at the same moment.
+6. The host presses **Start the movie**. Everyone starts at the same moment.
 
 After that anyone can pause, seek or skip, and it applies to the whole room.
 
@@ -113,7 +114,7 @@ echo-cancellation is built for voices, not loud continuous film audio, and it wi
 | `T` | Hold to talk (while muted) |
 | `Esc` | Close panels |
 
-Anything with a 🔗 on it affects both of you. Anything labelled **"just you"** doesn't.
+Controls marked with a small tick affect both of you. Anything labelled **"just you"** doesn't.
 
 ---
 
@@ -137,7 +138,7 @@ cannot tell an empty room apart from one it found but couldn't reach. In that or
 The host is watching a film and may not have noticed the prompt. Press **Ask again**, or message
 them. If they've turned off late joining you'll be told outright instead of left waiting.
 
-**Someone's missing from the roster (👥).**
+**Someone's missing from the Room panel.**
 The roster is the truth about who is actually connected. If a name isn't there, that person hasn't
 joined — check the room code matches exactly. If you see **your own name twice**, you have a stale
 Movie Watch window open somewhere; quit the browser entirely and rejoin.
@@ -161,7 +162,7 @@ above.
 
 **"You two have different files."**
 Your copies aren't identical, so timestamps don't line up. Best fix is to share one file. If you
-can't, open Settings (⚙) and use **Sync offset** to nudge yours until you match. It's remembered
+can't, open **Settings** and use **Sync offset** to nudge yours until you match. It's remembered
 for that room.
 
 **We're drifting apart.**
@@ -172,18 +173,18 @@ to 10%. If it's badly out, hit **Force resync now** in Settings.
 Headphones. See above.
 
 **You can't see each other.**
-Press 📷 on both sides and check the browser actually granted access. If the cameras are on and you
-still can't see each other, you're almost certainly on different networks: there's no TURN relay
-configured, so there's no route for the video. Open Settings (⚙) and read **Path** — `host` means
-same machine, `srflx`/`prflx` means direct, `relay` means TURN. Turn the cameras off and use a phone
-call instead; sync and chat don't need any of this.
+Press the camera button on both sides and check the browser actually granted access. If the cameras
+are on and you still can't see each other, open **Settings** and read **Path** — `host` means same
+machine, `srflx`/`prflx` means direct, `relay` means it's going through the TURN relay. Any of those
+means there *is* a route and something else is wrong. If Path is empty, the video has no route at
+all: turn the cameras off and use a phone call instead, since sync and chat don't need any of this.
 
 **Everything died the moment a camera came on.**
 That's the renegotiation. The app spots this and offers **Rejoin without video** — take it. Video
 between two networks needs a TURN relay, which isn't configured.
 
 **"Connected" but nothing syncs — check this first.**
-Open Settings (⚙) and read **Path** and **Watching with**.
+Open **Settings** and read **Path** and **Watching with**.
 
 - **Path says `host/host`** and the other person is on a different computer → you are connected to
   a leftover Movie Watch window on *your own* machine. It looks completely healthy — green dot,
@@ -244,6 +245,76 @@ Vanilla JavaScript, no build step, no npm. The only dependency loads from a CDN.
 
 **Architecture, decisions, and hard-won gotchas live in [`PROJECT.md`](PROJECT.md).** Read it before
 changing anything in `js/sync.js`.
+
+---
+
+## Look and feel
+
+The interface is modelled on [depoluxe.xyz](https://depoluxe.xyz), a film-production portfolio:
+EB Garamond, pure black and white, square corners, hairline rules instead of boxes, roman-numeral
+counters and italic titles in typographic quotes.
+
+The landing screen and the waiting room carry an **ambient frame stack** — a slow contact sheet of
+movie stills in the bottom-left corner, each frame sized `BASE · 0.72^(distance from the current
+one)` so two or three read as large and the rest shrink away along the bottom and up the left edge.
+It advances on its own, holding each composition for a moment and then stepping, and it is removed
+entirely the instant the film starts so nothing competes with the movie.
+
+**No film frame is stored in this repository, and that is deliberate.** Stills are studio
+copyright; this repo is public and deploys to a public site, so committing a hundred of them would
+be redistribution. What ships instead is [`js/frames-urls.js`](js/frames-urls.js) — a generated
+list of URLs pointing at TMDB's CDN, which is what their API is for. Nothing is stored or re-served
+by us, and the live site gets its pictures.
+
+To refresh or change the film list, regenerate it:
+
+```bash
+TMDB_API_KEY=xxxx node tools/fetch-stills.mjs --urls
+```
+
+Two other ways to fill the stack, both writing to the paths
+[`js/frames-data.js`](js/frames-data.js) already expects:
+
+**A. From your own copies of the films.** The better-looking option: you pick the exact moment
+rather than accepting whatever was in the press kit, and nothing leaves your machine.
+
+```bash
+tools/grab-frames.sh ~/films/Interstellar.mkv interstellar \
+    00:52:14 01:32:07 02:12:40 02:41:55
+```
+
+**B. Download from TMDB** instead of hot-linking, if you would rather the app worked with no
+network at all:
+
+```bash
+TMDB_API_KEY=xxxx node tools/fetch-stills.mjs
+```
+
+Local files under `img/frames/` are gitignored, so they stay on your machine and do **not** reach
+the deployed site. A film listed in `js/frames-urls.js` uses its URL; delete that film's entry to
+fall back to your own local frames.
+
+Both are one-off tools you run by hand — the app itself still has no build step and no npm
+dependencies.
+
+Entries whose file is missing draw as numbered slates with crop marks and the film's title, which
+is a designed placeholder rather than a broken image, so a half-populated set is fine to run. The
+manifest currently lists 26 films and about 110 stills; add or remove films by editing the `FILMS`
+array at the top of it.
+
+Each frame carries its title in the top-left over a soft diagonal scrim, so a film you have not
+seen is still identifiable. Stills from the same film are spread across the stack rather than
+bunched, so neighbouring frames are always from different films.
+
+The typeface is self-hosted in [`fonts/`](fonts/) (EB Garamond, SIL Open Font License, see
+`fonts/OFL.txt`) rather than linked from Google Fonts, so there is no third-party request and no
+flash of fallback text on the landing screen.
+
+If you have "reduce motion" turned on in your OS, the stack draws a single still composition and
+never animates.
+
+Film stills sourced through option B are provided by [TMDB](https://www.themoviedb.org/), which
+this project is not endorsed or certified by.
 
 ---
 

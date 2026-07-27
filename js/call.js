@@ -37,8 +37,9 @@ const RELEASE_MS = 500;
  *
  * Acquiring the camera is deliberately a separate step (`call.enable()`), because
  * it is the one action here that changes the shape of every peer connection:
- * `room.addStream()` forces an ICE renegotiation, and with no TURN relay that can
- * kill a connection which was working perfectly for data. Keeping it separate
+ * `room.addStream()` forces an ICE renegotiation, which can kill a connection that
+ * was working perfectly for data. A TURN relay is configured now, which should
+ * make that much rarer than it was, but not impossible. Keeping it separate
  * means the camera can be turned on at any moment in the session — nobody is
  * locked out of video by a checkbox they didn't tick — while a session that never
  * turns it on never pays that cost at all.
@@ -216,16 +217,24 @@ export async function startCall({ selfVideo, selfTile, tiles, onEnabled = () => 
   return { call, duck };
 }
 
+/** Hairline crossed-speaker, matching the control-bar icon set. */
+const MUTED_ICON =
+  '<svg class="i" viewBox="0 0 24 24" aria-hidden="true">'
+  + '<path class="solid" d="M3.5 9.4v5.2h3l4.2 3.2V6.2L6.5 9.4z"/>'
+  + '<path d="M15.2 9.6l5 5M20.2 9.6l-5 5"/></svg>';
+
 /**
  * Render the mic/camera state onto a tile.
  *
- * The muted badge is deliberately understated — a small translucent 🔇 in the
- * corner. Camera-off reuses the existing `.cam-off` styling, which swaps the
- * frozen last frame for a placeholder.
+ * The muted badge is deliberately understated — a small translucent glyph in
+ * the corner. Camera-off reuses the existing `.cam-off` styling, which swaps
+ * the frozen last frame for a placeholder.
  */
 function setTileAv(tile, { mic = true, cam = true } = {}) {
   const badges = tile.querySelector('.tile-badges');
-  if (badges) badges.textContent = mic ? '' : '🔇';
+  // innerHTML, not textContent: the badge is an inline SVG now. Cleared to
+  // an empty string when the mic is live, so nothing is left behind.
+  if (badges) badges.innerHTML = mic ? '' : MUTED_ICON;
   tile.classList.toggle('cam-off', !cam);
 }
 
@@ -413,6 +422,11 @@ function makeDraggable(tile, key) {
 
   tile.addEventListener('pointerdown', e => {
     if (e.target.dataset.resize) return;   // resize handle owns this gesture
+    // In the waiting room the tiles are laid out by CSS, and the `!important`
+    // rules mean a drag has no visible effect — but pointerup would still
+    // save the junk coordinates to localStorage and quietly overwrite the
+    // floating layout the user arranged during the last film.
+    if (tile.closest('.phase-lobby')) return;
     dragging = true;
     tile.classList.add('dragging');
     tile.setPointerCapture(e.pointerId);

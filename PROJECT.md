@@ -37,7 +37,10 @@ window on its own machine.
 | Component | File | Status |
 |---|---|---|
 | Project docs | `PROJECT.md`, `CLAUDE.md` | ✅ Done |
-| HTML/CSS shell | `index.html`, `css/style.css` | ✅ Done |
+| HTML/CSS shell | `index.html`, `css/style.css` | ✅ Done — rebuilt in the depoluxe.xyz visual language (EB Garamond, monochrome, square, hairline rules) |
+| Ambient frame stack | `js/frames.js`, `js/frames-data.js`, `js/frames-urls.js` | ✅ Done — canvas corner stack, title printed on each frame, 26 films / 109 stills served from TMDB's CDN |
+| Still-population tooling | `tools/fetch-stills.mjs`, `tools/grab-frames.sh` | ✅ Done — TMDB fetch verified end to end against a real key; all 26 films resolved correctly. `grab-frames.sh` still unrun against a real film file |
+| Typeface | `fonts/` | ✅ Done — EB Garamond self-hosted, 4 subsetted woff2 + OFL |
 | Networking | `js/net.js` | ✅ Done — verified over real Nostr relays |
 | Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified, plus a host-only control lock |
 | Player + file handling | `js/player.js` | ✅ Done — codec + audio preflight, fingerprint |
@@ -176,8 +179,9 @@ preflight so a wrong file produces a useful error instead of a black screen.
 
 **~~Cameras are opt-in, off by default.~~ REVERSED 2026-07-27 — see the next entry.** The original
 reasoning still holds and is why the replacement is shaped the way it is: sending a webcam stream
-forces an ICE renegotiation, and with no TURN relay that can kill a peer connection which was
-working perfectly for data — taking chat, reactions, presence and playback sync down with it.
+forces an ICE renegotiation, which can kill a peer connection that was working perfectly for data —
+taking chat, reactions, presence and playback sync down with it. *(A TURN relay went in on
+2026-07-27, which should make this much rarer; the shape of the design still stands.)*
 
 **The camera checkbox is gone; the camera is on demand instead.** The checkbox was a one-way door:
 forget to tick it and you could not get video for the whole session, which is a worse and more
@@ -253,6 +257,137 @@ installing and configuring two programs on both machines. It remains the fallbac
 ever proves unreliable.
 
 ---
+
+### The whole interface is modelled on depoluxe.xyz
+
+*Because the previous one looked generated rather than designed.* Concretely, what read as
+"AI-generated" was: 9–18px rounded corners everywhere, a coral `#ff6b6b` + teal `#4ecdc4` accent
+pair, two radial-gradient blobs behind the lobby, `system-ui`, and emoji standing in for icons.
+None of those are individually wrong; together they are the house style of every generated
+starter template, and this is an app for watching *films*.
+
+The replacement language is taken from depoluxe.xyz, a film-production portfolio: EB Garamond,
+pure black and white, **zero border radius, zero box-shadow**, 1px hairline rules instead of card
+borders, roman-numeral counters, italic titles in typographic quotes, and letterspaced uppercase
+micro-labels. `--radius` and `--shadow` still exist as tokens but are set to `0`/`none`, so any
+rule missed in the rewrite degrades to the correct flat square result instead of reintroducing
+the look.
+
+Their source map is public, so the effect below was ported from their actual source rather than
+guessed at from the rendered page.
+
+### EB Garamond is self-hosted, not linked from Google Fonts
+
+*Because the design IS the typeface, and a visible FOUT on the landing screen reads as the
+product being broken.* Google Fonts is a three-hop chain you cannot flatten or preload through
+(`HTML → googleapis → gstatic → woff2`); self-hosted, the font is a first-round-trip preload on
+an already-warm connection. It also removes a second third-party dependency — Trystero failing
+means "no watch party", but the font failing would mean "unreadable watch party", and that is not
+a risk worth outsourcing for 90KB.
+
+This does **not** breach the no-build-step rule. The files were taken from Google's own CSS
+endpoint (so the subsetting and `unicode-range` values are theirs) and are committed verbatim;
+GitHub Pages serves them with no tooling involved. A metric-matched `EBG Fallback` face with
+`size-adjust`/`ascent-override` means the swap causes no reflow. Licence in `fonts/OFL.txt`.
+
+### The ambient stack is ONE canvas that gets re-parented, not two canvases
+
+*Because it has to render on both the lobby screen and the stage, and those are siblings.*
+Three alternatives were rejected for concrete reasons:
+
+- **A canvas inside `#lobby`** — `.lobby` is `overflow-y: auto`, so on a short window the setup
+  card scrolls and an absolutely-positioned child scrolls with it. The background would slide.
+- **`position: fixed`** — a fullscreened element becomes the containing block for `fixed`
+  descendants in Chrome, so the layer would jump the moment someone pressed **F** in the waiting
+  room.
+- **Two canvases** — two backing stores, and the animation phase resets at the seam between
+  screens.
+
+Moving a `<canvas>` in the DOM preserves its bitmap and context (only assigning `width`/`height`
+clears them), so re-parenting is close to free. `z-index: 1` is correct in both parents: below
+`#lobby` (z-index 2), and inside `#stage` above the in-flow `<video>` but below `#tiles` (30).
+This also satisfies the fullscreen rule — on the player screen the layer is a descendant of
+`#stage`.
+
+### The stack advances by dwell-and-step, and stops for good when the film starts
+
+*Because a constant conveyor reads as a screensaver and a stepped one reads as editing.* It holds
+a composition for 2.4s, then eases through exactly one frame over 1.6s. The side benefit is
+large: during the dwell nothing changes, so the render loop skips the draw entirely — most frames
+cost one rAF callback and a float comparison.
+
+It never resumes after the film starts. The canvas is faded out over 0.8s, removed from the DOM,
+and every decoded bitmap dropped, so the second rAF loop is gone before the first frame of the
+film is decoded and nothing competes with the movie.
+
+### Falloff `k = 0.72`, with cumulative packing rather than depoluxe's telescoping form
+
+*Because we want two or three frames reading as large; depoluxe wants one.* Their size rule is
+`BASE · 0.5^|distance|`, and their placement telescopes — which packs edge-to-edge **only** at
+exactly `k = 0.5`. A gentler `k` there would leave gaps.
+
+Ours positions each frame by the cumulative size of everything between it and the corner:
+
+    cum(x) = BASE · (1 - k^x) / (1 - k)
+
+This is the geometric partial sum extended to real `x`. It equals the discrete sum exactly at
+integers (`cum(0)=0`, `cum(1)=BASE`, `cum(2)=BASE(1+k)`) and is smooth in between, so the stack
+packs perfectly for *any* `k` — which is what buys the freedom to choose 0.72.
+
+Two knobs exist because a gentle falloff keeps frames legible for longer, which is the point but
+also the hazard: `MAX_RADIUS: 4` caps how far the arms reach so the composition stays a *corner*
+rather than filling the page, and `SLOTS_MIN: 12` guarantees the wrap seam falls outside the cull
+radius (it must hold `N ≥ 2R + 2`, or a frame pops back into view at the seam).
+
+### Icons are mixed on purpose: pictogram, word, or emoji
+
+*Because a single rule produces a worse bar than three honest ones.* A hairline SVG where a
+universal convention exists (transport, mic, camera, duck, gear, fullscreen); a letterspaced word
+where none does (`CC`, `ROOM`, `CHAT`); and emoji left alone for the reaction button, because the
+thing it produces *is* an emoji. Every button keeps its `title` and gains an `aria-label`, so the
+accessible name stays a full sentence even where the visible label is three letters.
+
+
+### Film stills are NOT committed to this repository
+
+*Because this repo is public and deploys to a public GitHub Pages site, and film frames are
+studio copyright.* Committing ~110 of them would be redistribution from a public server, whatever
+the intent. `img/frames/` is gitignored and the manifest ships with `src` paths that may point at
+nothing.
+
+Two supported ways to fill it, both writing to the paths the manifest already expects:
+
+- **`tools/grab-frames.sh`** — ffmpeg one-frame extraction from your own copy of a film. Better
+  looking, because you choose the exact moment instead of taking whatever went in a press kit, and
+  the frames never leave the machine.
+- **`tools/fetch-stills.mjs`** — TMDB, which licenses stills for this use. Downloads by default;
+  `--urls` hot-links their CDN so nothing is stored at all. Requires the attribution line in
+  README.md.
+
+Both are one-off tools run by hand with zero npm dependencies, so the no-build-step rule still
+holds for the app itself.
+
+The consequence worth knowing: a missing still is a **404 in the console**. That is expected and
+harmless — the engine catches it and draws a slate — but it does mean the console is not clean
+until the images are in place.
+
+### The title is printed ON each still, not beside it
+
+*Because a caption floating outside the plate stops reading as belonging to it once the frames are
+packed edge to edge*, and because someone who has not seen the film still has to be able to tell
+what they are looking at. It sits in the top-left over a linear gradient run along the corner
+diagonal, which paints as a soft triangular wedge — dark under the text, gone by the middle of the
+frame, so it never reads as a bar laid across the picture. The wedge is not decoration: stills
+arrive with unknown luminance and a bright corner would otherwise swallow the title entirely.
+
+### The manifest is interleaved by film, not played in source order
+
+*Because the stack shows about nine frames at once and each film contributes four or five.* In
+source order a third of the screen would be the same movie. The engine round-robins by title on
+load, so neighbouring frames are always from different films. It is a deterministic rotation
+rather than a shuffle, so the composition is identical on every load and the layout stays
+debuggable.
+
 
 ## Message protocol
 
@@ -488,6 +623,46 @@ replace `,` with `.` in timestamps.
 
 ---
 
+**`stage.hidden = false` runs ~70 lines and several `await`s before `applyPhase()` sets the
+phase class.** *(Found while adding the ambient layer; it produced a black flash on entry.)*
+`admit()` reveals the stage immediately, but the `.phase-lobby` class that the waiting-room
+layout depends on was only applied much later, after `attach()`, `loadSubtitles()` and
+`startCall()` had all been awaited. For that entire window the stage is visible with no phase
+class — so the black, not-yet-started `<video>` paints over everything and `#greenRoom` is still
+`hidden`. With a large movie file the window is clearly visible. The fix is to set the class in
+the *same synchronous block* as the reveal, using the `startPhase` argument; it is idempotent
+with the later `applyPhase()` call. **Anything that must be visible on entry has to be set before
+the first `await`, not after it.**
+
+**`applyPhase()` is the only funnel every "the movie starts now" path passes through.**
+*(Established while deciding where to stop the ambient animation.)* There are four such paths and
+`#startMovieBtn` is only the first: the host clicking start; a guest receiving the `phase`
+message in `net.onPhase`; the safety net in `onRemoteCtrl` that catches a bare `play` arriving
+with no phase message; and someone admitted mid-film via `admit({startPhase:'playing'})`, who
+**never calls `enterPlaying()` at all**. All four reach `applyPhase()`. Hooking the button would
+have worked only for the host and silently failed for every guest — verified by driving two
+windows and confirming the guest, who never touched the button, retired its layer correctly.
+
+**Assigning `canvas.width` or `canvas.height` clears the bitmap and resets all context state.**
+Combined with `ResizeObserver` firing repeatedly with *identical* box dimensions during the
+fullscreen transition, a naive resize handler blanks the canvas several times per fullscreen
+toggle. The handler must compare the measured size against the current one and return early when
+nothing changed.
+
+**`ctx.fillText` silently falls back to the system serif if the webfont has not loaded yet.**
+There is no error and no reflow to notice — the labels are simply in the wrong typeface. The
+first draw is gated on `document.fonts.load()` behind a 1.5s timeout, and a redraw is queued on
+`document.fonts.ready`. This is **mandatory** in reduced-motion mode, where exactly one frame is
+ever drawn and would otherwise be stuck in the fallback for the whole session.
+
+**A module import ignores a cache-busting query on the HTML.** *(Cost several confusing
+iterations.)* Reloading `index.html?cb=123` re-fetches the HTML but `import './frames.js'`
+resolves to the same URL as before and is served from cache, so edits appear to have no effect —
+which reads exactly like a broken code path. This is the module-level twin of the documented
+`style.css` caching trap. Serve with `Cache-Control: no-store` while iterating, and remember that
+restarting the browser process may be needed to clear a driver-level cache too.
+
+
 ## Known issues
 
 **The camera now renegotiates every session, by design.** The waiting room calls `call.enable()`
@@ -587,6 +762,25 @@ Read the Settings (⚙) rows to tell the cases apart:
 
 ---
 
+**The ambient stack ships with no images.**
+`js/frames-data.js` lists 26 films and ~110 still slots; `img/frames/` is empty and gitignored, so
+every frame currently draws as a slate carrying the film's title. That is a deliberate designed
+state rather than a broken one, but it is not the finished look, and **each missing still logs a
+404**. Populate with `tools/grab-frames.sh` or `tools/fetch-stills.mjs`. The composition does not
+move when the images arrive.
+
+**Neither population tool has been run end to end.** `fetch-stills.mjs` has not been exercised
+against a real TMDB key, and `grab-frames.sh` has not been run against a real film file. Both are
+syntax-checked only. Expect to debug them on first use — in particular TMDB's search can return
+the wrong film for a remake or a re-release, so check what lands before trusting it.
+
+**Fullscreen overlay behaviour is still unverified, and now has one more thing riding on it.**
+The ambient layer was deliberately made a re-parented descendant of `#stage` (rather than
+`position: fixed`) precisely so it survives fullscreen, and the DOM containment has been
+confirmed — but as with every other overlay, actual rendering in fullscreen has never been
+observed. Headless Chromium is not a useful test for this.
+
+
 ## Next steps
 
 1. **Re-run the pair that failed, and read the Path row.** TURN is in (`net.js`), and every part of
@@ -600,18 +794,22 @@ Read the Settings (⚙) rows to tell the cases apart:
    split: keep waiting for `net.peerCount`, but if `room.getPeers()` has entries whose
    `connectionState` is `connecting`/`failed`, say so — the room was found, the network route was
    not — and point at TURN rather than at the room code.
-3. **Verify the camera on two real machines** now that TURN is in — more urgent than it was, since
+3. **Supply the real movie stills.** `js/frames-data.js` has twelve placeholder titles and no
+   images. Drop landscape files into `img/frames/`, set `src` on each entry, then re-tune `K`
+   (0.68–0.74) and `DWELL_MS` against real pictures — the current values were chosen against
+   empty slates and may want adjusting once there is actual luminance in the frames.
+4. **Verify the camera on two real machines** now that TURN is in — more urgent than it was, since
    the camera is no longer opt-in and every session renegotiates. If it turns out to break
    cross-network links routinely, the fix is not to bring the checkbox back but to negotiate the
    media transceivers up front (a silent placeholder stream at join, swapped for the real tracks
    with Trystero's `replaceTrack`), which avoids renegotiation entirely.
-4. **Try the waiting room with real people.** It has only ever been driven by a script. The open
+5. **Try the waiting room with real people.** It has only ever been driven by a script. The open
    questions are whether 12s feels too long to wait on the "looking for room" card, and whether a
    host watching a film actually notices the corner join-request card.
-5. **Check `SPEAK_THRESHOLD` (0.045) against a real microphone.** Every speaking-indicator test so
+6. **Check `SPEAK_THRESHOLD` (0.045) against a real microphone.** Every speaking-indicator test so
    far has used an oscillator at a fixed level, which says nothing about whether a normal speaking
    voice crosses the line — or whether movie audio bleeding into the mic crosses it constantly.
-6. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
+7. Optional: `showOpenFilePicker()` + IndexedDB to remember the file and resume position between
    sessions, so the movie doesn't have to be re-picked every time.
 
 *Dropped from this list: "re-test with every window closed to rule out ghost peers" and "add TURN
@@ -683,6 +881,84 @@ the fix is **Next steps** item 2.
 
 No code changed in this entry — it is a measurement. **Next steps** are re-ordered around it:
 adding TURN is now the blocker rather than a contingency.
+### 2026-07-27 — the frame stack has real stills
+
+`js/frames-urls.js` (generated) now carries 109 TMDB CDN URLs across all 26 films, and the manifest
+prefers a URL over a local path. No image bytes are committed; the live site gets its pictures and
+nothing is redistributed from here.
+
+- `tools/fetch-stills.mjs --urls` now emits a JS module the app imports directly, so regenerating
+  is the whole update step — it used to write JSON that had to be wired up by hand.
+- Verified every one of the 26 films resolved to the correct TMDB entry, including the two that
+  could plausibly have gone wrong: **Oldboy** matched the 2003 original rather than the 2013
+  remake, and *Attack on Titan: THE LAST ATTACK* matched the 2024 compilation film. Zero
+  mismatches.
+- `image.tmdb.org` returns `access-control-allow-origin: *`, so the `crossOrigin = 'anonymous'`
+  the engine sets on remote stills does not break the load. Checked before wiring it up, because
+  setting crossOrigin against a CDN without CORS headers fails the image silently.
+
+Rendering verified on a clean console with no errors.
+
+### 2026-07-27 — titles on the frames, 26 films, and tooling to populate them
+
+- **The film title is now printed on each still**, top-left, over a diagonal gradient wedge, with
+  the roman numeral and year beneath it. Replaces the caption that used to float outside the
+  plate. Long titles ellipsise to their own frame; frames narrower than 128px skip the title.
+- **Manifest expanded to 26 films / ~110 stills**, authored as a compact `FILMS` array that
+  expands to one entry per still.
+- **Frames are interleaved by film on load**, so the four or five stills from one film never sit
+  next to each other in the stack.
+- **`tools/grab-frames.sh`** — pull stills out of your own copy of a film with ffmpeg.
+- **`tools/fetch-stills.mjs`** — pull them from TMDB instead; `--urls` hot-links rather than
+  downloads. Zero npm dependencies.
+- `img/frames/` gitignored; cross-origin images now request CORS so the `--urls` route does not
+  taint the mip canvases.
+
+Verified with synthetic stand-ins for all 26 films: load → mipmap → grade → draw → title overlay,
+titles legible over both dark and near-white frames, interleaving confirmed on screen. **Not**
+verified: either population tool against real inputs.
+
+### 2026-07-27 — the interface rebuilt in the depoluxe.xyz language, with an ambient frame stack
+
+The app looked generated. It now looks designed, and the landing screen has something to say.
+
+- **New typeface.** EB Garamond, self-hosted (`fonts/`, 4 subsetted woff2 + OFL), with a
+  metric-matched fallback so the swap causes no reflow.
+- **New token set.** Pure black and white, `--radius: 0`, `--shadow: none`, hairline rules,
+  a fluid `clamp(13px, .95vw, 22px)` root with everything downstream in rem, and the z-index
+  ladder promoted to `--z-*` tokens as a single source of truth.
+- **New ambient frame stack** (`js/frames.js` + `js/frames-data.js`): a 2D-canvas contact sheet
+  of movie stills in the bottom-left corner, each sized `BASE · 0.72^|distance|` and packed by
+  cumulative geometric sum, advancing on its own with no scroll. Ported from depoluxe's
+  `InfiniteScroll__HomeItem.js` via their public source map, then re-derived so the packing works
+  at a gentler falloff. Runs on the landing screen, follows you into the waiting room, and is
+  removed for good when the film starts.
+- **Waiting room re-laid-out**: frame stack bottom-left, participant cameras **upper-right**,
+  room text centred between them.
+- **Icons**: hairline SVG for transport/mic/camera/duck/gear/fullscreen, letterspaced words for
+  `CC`/`ROOM`/`CHAT`, emoji kept only for reactions. `aria-label` added to every control.
+- **A hairline progress rail** down the left edge of the stage, fed from the existing
+  `timeupdate` handler.
+- **First accessibility pass**: a global `prefers-reduced-motion` block (there was none), a
+  `:focus-visible` ring (there was none, and two inputs set `outline: none`), and a
+  reduced-motion path in the canvas engine that draws one composition and starts no rAF at all —
+  verified at zero rAF calls.
+
+Fixed in passing:
+
+- `setStatus()` assigned `el.className` outright, wiping any other class on `#videoStatus` /
+  `#subStatus`. Now swaps only the state class.
+- `#playBtn` had its `textContent` rewritten on every play/pause event, which would have deleted
+  its inline SVGs. Now toggles a `.playing` class.
+- Dragging a tile in the waiting room had no visible effect but still wrote the junk coordinates
+  to `localStorage` on pointerup, quietly overwriting the floating layout arranged during the
+  last film. Guarded.
+
+Verified: full create → waiting room → play flow; two windows on one room code, including that a
+**guest who never touches the start button** retires its ambient layer correctly (which is the
+test that proves the `applyPhase()` hook rather than the button); reduced motion; narrow, tall and
+ultrawide viewports; zero console errors throughout. All 98 element ids preserved through the
+markup rewrite, checked automatically.
 
 ### 2026-07-27 — a room you enter: create/join, a waiting room, and host approval
 
