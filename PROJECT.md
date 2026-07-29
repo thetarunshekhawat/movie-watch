@@ -38,7 +38,8 @@ window on its own machine.
 |---|---|---|
 | Project docs | `PROJECT.md`, `CLAUDE.md` | ✅ Done |
 | HTML/CSS shell | `index.html`, `css/style.css` | ✅ Done — rebuilt in the depoluxe.xyz visual language (EB Garamond, monochrome, square, hairline rules) |
-| Ambient frame stack | `js/frames.js`, `js/frames-data.js`, `js/frames-urls.js` | ✅ Done — canvas corner stack, title printed on each frame, 26 films / 109 stills served from TMDB's CDN |
+| Ambient frame stack | `js/frames.js`, `js/frames-data.js`, `js/frames-urls.js` | ✅ Done — canvas corner stack, title printed on each frame, 26 films / 109 stills served from TMDB's CDN. Interactive: click a frame to bring it to the corner, wheel or drag to run the stack by hand |
+| Backdrop wash | `css/style.css` (`#ambient .backdrop`), `syncBackdrop()` in `js/frames.js` | ✅ Done — the corner still, blurred and zoomed behind the whole page, cross-fading as the stack moves |
 | Still-population tooling | `tools/fetch-stills.mjs`, `tools/grab-frames.sh` | ✅ Done — TMDB fetch verified end to end against a real key; all 26 films resolved correctly. `grab-frames.sh` still unrun against a real film file |
 | Typeface | `fonts/` | ✅ Done — EB Garamond self-hosted, 4 subsetted woff2 + OFL |
 | Networking | `js/net.js` | ✅ Done — verified over real Nostr relays |
@@ -318,6 +319,56 @@ cost one rAF callback and a float comparison.
 It never resumes after the film starts. The canvas is faded out over 0.8s, removed from the DOM,
 and every decoded bitmap dropped, so the second rAF loop is gone before the first frame of the
 film is decoded and nothing competes with the movie.
+
+### The stack takes input, and anything you do beats the animation
+
+*Because a thing that moves on its own and ignores you reads as a video, not as an interface.* The
+stack answers to three gestures — **click a frame** to bring it to the corner, **wheel** over it,
+**drag** it — and all three write to the same float `current` that the animation drives. One state
+machine arbitrates: `auto` (dwell-and-step) → `manual` (a wheel or a finger, then friction) →
+`glide` (tweening to a specific frame) → `hold` (stationary, counting down), and `auto` is the only
+one that ever yields. It never interrupts, it just waits `IDLE_MS` (2.6s) after your hands come off
+and then picks up from wherever you left it.
+
+Three rules that are not obvious:
+
+- **Everything lands on a whole frame.** A flick decays under friction and then snaps to the
+  nearest index; a half-frame composition looks like a stalled load, not a choice.
+- **Click-to-centre takes the short way round.** The target is `current + offset(i)`, and `offset`
+  is the *wrapped* distance — without the wrap, clicking the frame one step behind the corner would
+  run the stack forward through all twenty-odd other films to reach it.
+- **Hit-testing reads the last drawn frame.** `draw()` records each plate's rect nearest-first,
+  which is the reverse of paint order, so the plate on top is the one that gets hit. Deriving the
+  rects again from the geometry at click time would be a second implementation of the same
+  formulas, free to disagree with what is actually on screen.
+
+Drag maps `-(dx + dy)` to index: frames travel toward the corner as `current` grows — leftward
+along the bottom, then up the left edge — so pushing the stack in either of those directions runs
+it forward, and one combined term covers both arms and every diagonal between them.
+
+### The corner still is also the page background, blurred and blown up
+
+*Because the page was pure black behind a monochrome stack, and that reads as unfinished rather
+than as minimal.* Whichever frame is at the corner is painted across the whole viewport at
+`scale(1.18)` under a 3.5rem blur, cross-fading over 1.4s each time a different frame arrives.
+It is the one place colour survives — the plates are graded to hard greyscale, so a desaturated
+wash as well would leave literally nothing but black.
+
+Three things about it that were each arrived at the hard way:
+
+- **Two layers, not one.** A single layer would have to swap `background-image` and fade in the
+  same instant, which flashes. One holds the outgoing image while the other brings the new one in.
+- **Only `opacity` animates.** A full-viewport blur is expensive to compute and its result is
+  cached only while the layer's content and transform hold still — animating the transform would
+  re-run the blur on every frame of every fade. So the zoom is a fixed scale.
+- **It is tuned against the brightest stills, not the average.** `brightness(.4) × opacity(.6)`
+  caps the wash at about 24% luminance. Tuned by eye against a dark frame it looked perfect, then
+  a daylight still turned the whole page into grey fog and flattened the far plates, which are
+  semi-transparent at the cull edge and let it straight through.
+
+The source is the original image, already decoded and cached by `loadSlot`, so this costs a paint
+and no network. A slot with no image is skipped rather than blanked — dropping to black mid-stack
+reads as a bug.
 
 ### Falloff `k = 0.72`, with cumulative packing rather than depoluxe's telescoping form
 
@@ -643,6 +694,34 @@ which reads exactly like a broken code path. This is the module-level twin of th
 `style.css` caching trap. Serve with `Cache-Control: no-store` while iterating, and remember that
 restarting the browser process may be needed to clear a driver-level cache too.
 
+**A full-viewport section above the ambient layer swallows every click meant for it.**
+*(Found the moment the frame stack was made clickable — the canvas received nothing at all.)*
+`#lobby` is `place-items: center` over the full viewport at `z-index: 2`, so although it *looks*
+like a column in the middle, its hit area is the entire screen and it sits on top of `#ambient`
+(z-index 1). Pointer events never reached the canvas. The fix is the pattern `.green-room` was
+already using: the section is `pointer-events: none` and the card opts back in with
+`pointer-events: auto`. Scrolling a card taller than the viewport still works, because the wheel
+event lands on the *card* and bubbles up to `.lobby`, which is the scroller. **Before wiring input
+to anything behind a centred overlay, check what is actually on top of it — a centred box is
+usually a full-bleed box in disguise.**
+
+**A canvas that takes input needs `touch-action: none` or a touchscreen never sends you a move.**
+The browser claims the gesture as a scroll on the first movement and stops dispatching
+`pointermove` to the element. Dragging the stack works on a trackpad and silently does nothing on
+a phone without it.
+
+**`setPointerCapture` throws for a pointer id that is not currently active.** Not
+`ReturnValue: undefined` — an actual `NotFoundError`, which abandons the gesture half-applied
+inside the `pointerdown` handler. Both capture calls are wrapped; losing capture only costs you
+the drag continuing off-canvas, which is much cheaper than the throw.
+
+**A `transitionend` listener on a container fires for every descendant's transition too.**
+`stop()` tears the ambient layer down on `transitionend`, and the moment the backdrop layers were
+added — which have their own 1.4s opacity fade — a fade finishing mid-teardown would have removed
+the whole layer early. The handler now checks `e.target === root`. Events from descendants bubble;
+`{ once: true }` makes that worse, not better, because the first event to arrive wins whether or
+not it is yours.
+
 
 ## Known issues
 
@@ -696,17 +775,18 @@ Read the Settings (⚙) rows to tell the cases apart:
 
 ---
 
-**The ambient stack ships with no images.**
-`js/frames-data.js` lists 26 films and ~110 still slots; `img/frames/` is empty and gitignored, so
-every frame currently draws as a slate carrying the film's title. That is a deliberate designed
-state rather than a broken one, but it is not the finished look, and **each missing still logs a
-404**. Populate with `tools/grab-frames.sh` or `tools/fetch-stills.mjs`. The composition does not
-move when the images arrive.
+**The stack is blank for the first ~20 seconds of a cold load.** All 109 stills are fetched from
+TMDB's CDN on boot, and until each one decodes its plate draws as a slate and the backdrop stays
+black. On a warm cache it is instant; on a first visit the landing screen is visibly emptier than
+it will be a moment later. Nothing is broken, but it means **any screenshot taken within ~20s of a
+cold load is not the real design** — a lesson learned twice while tuning the backdrop.
 
-**Neither population tool has been run end to end.** `fetch-stills.mjs` has not been exercised
-against a real TMDB key, and `grab-frames.sh` has not been run against a real film file. Both are
-syntax-checked only. Expect to debug them on first use — in particular TMDB's search can return
-the wrong film for a remake or a re-release, so check what lands before trusting it.
+**`grab-frames.sh` has not been run end to end.** The TMDB route is proven (all 26 films resolved
+correctly), but ffmpeg extraction from a real film file is still syntax-checked only.
+
+**The roman numeral on a plate is its slot number, not its rank.** `roman(slot.index)` counts
+across all ~110 stills, and `ROMAN` only covers twenty, so past the twentieth frame the numeral
+degrades to a plain number — `XVII`, then `31`. Cosmetic, visible, and unfixed.
 
 **Fullscreen overlay behaviour is still unverified, and now has one more thing riding on it.**
 The ambient layer was deliberately made a re-parented descendant of `#stage` (rather than
@@ -717,10 +797,10 @@ observed. Headless Chromium is not a useful test for this.
 
 ## Next steps
 
-1. **Supply the real movie stills.** `js/frames-data.js` has twelve placeholder titles and no
-   images. Drop landscape files into `img/frames/`, set `src` on each entry, then re-tune `K`
-   (0.68–0.74) and `DWELL_MS` against real pictures — the current values were chosen against
-   empty slates and may want adjusting once there is actual luminance in the frames.
+1. **Watch someone use the frame stack.** Click-to-centre, wheel and drag are all verified
+   working, but nobody has been observed *discovering* them — the only affordance is the cursor
+   turning to a pointer and the plate's border going solid on hover. If people never touch it,
+   the fix is a visible cue, not more gesture support.
 2. **Re-test with every other Movie Watch window closed on both machines.** Quit both browsers
    completely first — that is the only way to be sure no ghost survives. Then check the **Path**
    row: anything other than `host/host` means the two laptops have genuinely found each other.
@@ -750,6 +830,37 @@ observed. Headless Chromium is not a useful test for this.
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-27 — the frame stack answers back, and the page gets a background
+
+The landing screen was a black page with a monochrome stack that moved on its own and ignored you.
+Both halves of that are fixed.
+
+- **A blurred, zoomed backdrop.** Whichever still is at the corner is now painted across the whole
+  viewport at `scale(1.18)` under a 3.5rem blur, cross-fading over 1.4s each time the stack steps.
+  Two layers so the incoming image can come up while the outgoing one is still there; only
+  `opacity` animates, because a full-viewport blur re-computes on any transform change. It is the
+  one place colour is allowed — the plates stay hard greyscale.
+- **Click a frame to bring it to the corner.** Hit-testing reads the rects `draw()` recorded for
+  the frame you are actually looking at, and glides the shortest wrapped way round.
+- **Wheel over the stack to run it.** Either axis, since the stack occupies both edges. Trackpad
+  deltas accumulate, and the gesture snaps onto a whole frame when it ends.
+- **Drag it.** Pointer events, so it works with a mouse and with a finger; a flick carries on under
+  friction and then snaps. `touch-action: none` on the canvas, or a touchscreen never sends a move.
+- **A hovered plate goes to full opacity with a solid white rule**, and the cursor becomes a
+  pointer. No scale change — the plates are packed edge to edge, so anything that moves one shoves
+  its neighbours.
+- The animation now yields to all of this through a four-state machine (`auto` → `manual` →
+  `glide` → `hold`) and resumes 2.6s after your hands come off, from wherever you left it.
+- **Fixed: `#lobby` was swallowing every click meant for the stack.** It is centred content in a
+  full-viewport section above `#ambient`, so its hit area is the whole screen. Now
+  `pointer-events: none` with the card opting back in — the same pattern `.green-room` already used.
+
+Verified in a live browser at 1440×900 and at 390×780: a click on the plate two steps *up* the left
+arm made that film the corner frame (a direction the animation can never move on its own); three
+wheel notches backwards moved the corner four frames back and landed square; a 400px drag advanced
+it two; the backdrop cross-faded to each new corner still; and the lobby's buttons, inputs and
+short-window scrolling all still work.
 
 ### 2026-07-27 — the frame stack has real stills
 

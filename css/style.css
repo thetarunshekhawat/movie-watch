@@ -147,6 +147,17 @@
      crushes the empty slates into the page for no gain. */
   --ambient-overlay: .18;
 
+  /* ── Backdrop wash ──
+     The corner still, blown up behind everything. It is the one place colour
+     survives: the plates are graded to pure greyscale, so a fully desaturated
+     wash as well would leave nothing at all separating the page from black.
+     Half saturation at 42% brightness reads as the film's *light* rather than
+     as an image, and stays dark enough that the lobby column — which carries
+     its own 55% black and a 2.5rem backdrop-blur — is unaffected. */
+  --backdrop-blur:     3.5rem;
+  --backdrop-strength: .6;
+  --dur-backdrop:      1.4s;
+
   /* Neutered, NOT deleted: any `var(--radius)` or `var(--shadow)` missed in a
      restyle then degrades to the correct square/flat result instead of
      reintroducing the look we just removed. */
@@ -222,7 +233,48 @@ input  { font: inherit; }
   transition: opacity var(--dur-l) var(--ease-out-expo);
 }
 #ambient.leaving { opacity: 0; }
-#ambient canvas { display: block; width: 100%; height: 100%; }
+
+/* The canvas is the ONE part of the ambient layer that takes input: click a
+   plate to bring it to the corner, wheel or drag to run the stack by hand.
+   #ambient itself stays transparent to the pointer so the blurred backdrop
+   and the contrast scrim never swallow a click.
+   `touch-action: none` is what makes the drag work on a touchscreen — without
+   it the browser claims the gesture as a scroll before we see a move. */
+#ambient canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+  touch-action: none;
+}
+#ambient canvas.on-plate { cursor: pointer; }
+#ambient.dragging canvas { cursor: grabbing; }
+
+/* ── Backdrop wash ──
+   Two layers that cross-fade, so the incoming still can come up while the
+   outgoing one is still there. Only `opacity` animates: the blur is expensive
+   to compute and the result is cached for as long as the layer's own content
+   and transform hold still, so animating the transform as well would re-run a
+   full-viewport blur on every frame of every fade. The zoom is therefore a
+   fixed scale, and `inset: -12%` keeps the blurred edges off-screen. */
+#ambient .backdrop {
+  position: absolute;
+  inset: -12%;
+  background: 50% 50% / cover no-repeat;
+  /* Tuned against the BRIGHTEST stills in the set, not the average. Stills
+     vary enormously — Interstellar's black space next to the Matrix lobby —
+     and a wash that reads well over a night scene turns into a grey fog over
+     a daylight one, flattening the far plates, which are semi-transparent at
+     the cull edge and therefore let it through. brightness × opacity caps the
+     wash at about 24% luminance, so a bright frame is atmosphere and a dark
+     frame is a faint glow. */
+  filter: blur(var(--backdrop-blur)) saturate(.6) brightness(.4) contrast(.95);
+  transform: scale(1.18);
+  opacity: 0;
+  transition: opacity var(--dur-backdrop) linear;
+  will-change: opacity;
+}
+#ambient .backdrop.on { opacity: var(--backdrop-strength); }
 
 /* Contrast floor. Guarantees white text clears 7:1 over whatever stills the
    images turn out to be, independent of their content. */
@@ -231,6 +283,7 @@ input  { font: inherit; }
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, var(--ambient-overlay));
+  pointer-events: none;
 }
 
 /* ═══════════════════ LOBBY ═══════════════════ */
@@ -243,12 +296,19 @@ input  { font: inherit; }
   overflow-y: auto;
   position: relative;
   z-index: 2;
+  /* The section covers the whole viewport and sits above #ambient, so without
+     this it would eat every click and wheel meant for the frame stack behind
+     it. Same pattern as .green-room: the card opts back in. Scrolling a card
+     taller than the viewport still works, because the wheel event lands on the
+     card and bubbles to this scroller. */
+  pointer-events: none;
 }
 
 /* No card. A hairline-ruled column floating over the frame stack, with its own
    backdrop blur so text stays legible over whatever still is behind it — that
    blur is doing the contrast work a heavy full-screen scrim used to do. */
 .lobby-card {
+  pointer-events: auto;         /* .lobby opted out; see the note there */
   width: min(34rem, 100%);
   padding: var(--p-l) var(--p-m);
   background: rgba(0, 0, 0, .55);
