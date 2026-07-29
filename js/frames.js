@@ -27,10 +27,22 @@
  * Both branches agree at t = 0, which is the shared corner frame.
  *
  * ── Motion ────────────────────────────────────────────────────────────────
- * Dwell, then step: hold a composition for DWELL_MS, then ease through
- * exactly one index over MOVE_MS. Reads as someone stepping through a contact
- * sheet rather than a conveyor belt — and during the dwell nothing changes, so
- * the loop skips the draw entirely. That is most frames.
+ * `current` is a float index; everything else is derived from it. Four modes
+ * write to it, and only one is ever active:
+ *
+ *   auto    dwell, then step: hold a composition for DWELL_MS, then ease
+ *           through exactly one index over MOVE_MS. Reads as someone stepping
+ *           through a contact sheet rather than a conveyor belt — and during
+ *           the dwell nothing changes, so the loop skips the draw entirely.
+ *           That is most frames.
+ *   manual  a wheel or a drag is moving it directly, followed by friction.
+ *   glide   tweening to a specific index — click-to-centre, and the snap that
+ *           lands a flick on a whole frame.
+ *   hold    stationary after an interaction. Resumes `auto` IDLE_MS later, so
+ *           the stack does not lurch back into motion under the cursor.
+ *
+ * Anything the person does wins immediately: auto never fights an input, it
+ * just waits its turn.
  *
  * ── Lifecycle ─────────────────────────────────────────────────────────────
  * Starts on import, mounted at body level. `mount(stage)` re-parents it when
@@ -64,6 +76,17 @@ export const CONFIG = {
   DPR_CAP: 1.5,
   PIXEL_BUDGET: 4e6,
   GRADE: 'grayscale(1) contrast(.92) brightness(.85)',
+
+  // ── Interaction ──
+  WHEEL_STEP: 340,  // wheel pixels that equal one index step
+  DRAG_STEP: 190,   // pointer pixels along the arms that equal one index step
+  DRAG_SLOP: 6,     // movement under this is a click, not a drag
+  FRICTION: 7,      // e-folds per second of flick velocity
+  MAX_VEL: 9,       // index steps per second — a hard flick still stays legible
+  WHEEL_IDLE_MS: 130, // no wheel event for this long ⇒ the gesture is over
+  SNAP_MS: 520,     // settling onto a whole frame after a flick
+  GLIDE_MS: 900,    // click-to-centre
+  IDLE_MS: 2600,    // hands off this long ⇒ the stack resumes on its own
 };
 
 const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X',
@@ -87,6 +110,24 @@ let raf = 0, lastTs = 0, dead = false, mounted = false;
 let dirty = true;         // force one draw (resize, font load, first paint)
 let reduced = false;
 let ro = null;
+
+// Motion. See the header — `mode` is the state machine.
+let mode = 'auto';        // 'auto' | 'manual' | 'glide' | 'hold'
+let vel = 0;              // index steps per second, during a flick
+let wheelIdle = 0;        // ms since the last wheel event
+let held = false;         // a wheel gesture or a finger is driving `current`
+let glideFrom = 0, glideTo = 0, glideT = 0, glideDur = 0;
+let idleT = 0;            // ms spent in 'hold'
+
+// Input
+let hits = [];            // last frame's plate rects, NEAREST first
+let hover = -1;           // slot under the cursor, or -1
+let ptr = null;           // { id, x0, y0, at0, startCurrent, moved, lastX, lastY, lastT }
+
+// Backdrop
+let bg = [];              // the two cross-fading .backdrop layers
+let bgTop = 0;            // which one is currently showing
+let bgIndex = -1;         // slot it is showing
 
 // Adaptive degradation
 let drawMs = [], degraded = 0;
@@ -196,6 +237,12 @@ async function loadSlot(slot) {
 const hair = v => (Math.round(v * dpr) + 0.5) / dpr;
 
 function drawPlate(slot, x, y, w, h, alpha, t) {
+  // A hovered plate is a click target, and has to say so. Full opacity plus a
+  // solid white rule is the whole affordance — no scale, no shadow: the plates
+  // are packed edge to edge, so anything that changes a plate's geometry would
+  // shove its neighbours around.
+  const hot = slot.index === hover;
+  if (hot) alpha = 1;
   ctx.globalAlpha = alpha;
 
   // 1. the plate. Deterministic per slot so the stack reads as distinct
@@ -222,7 +269,7 @@ function drawPlate(slot, x, y, w, h, alpha, t) {
   if (mip) ctx.drawImage(mip, x, y, w, h);
 
   // 3. hairline border
-  ctx.strokeStyle = 'rgba(255,255,255,.38)';
+  ctx.strokeStyle = hot ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.38)';
   ctx.lineWidth = 1 / dpr;
   ctx.strokeRect(hair(x), hair(y), w, h);
 
@@ -321,6 +368,7 @@ function draw() {
   }
   vis.sort((a, b) => Math.abs(b.t) - Math.abs(a.t));
 
+  hits.length = 0;
   for (const { i, t } of vis) {
     const a = Math.abs(t);
     const h = bh * Math.pow(K(), a);
@@ -336,7 +384,12 @@ function draw() {
     const alpha = clamp((R - a) / CONFIG.FADE_BAND, 0, 1);
     if (alpha <= 0.002) continue;
     drawPlate(slots[i], x, y, w, h, alpha, t);
+    // Nearest first, which is the reverse of paint order: the plate drawn last
+    // is the one on top, so it must be the first thing hit-testing considers.
+    hits.unshift({ i, x, y, w, h });
   }
+
+  syncBackdrop();
 
   // adaptive degradation — never stutter next to a live WebRTC session
   const ms = performance.now() - t0;
@@ -353,7 +406,111 @@ function draw() {
   }
 }
 
+// ── Backdrop ───────────────────────────────────────────────────────────────
+
+/**
+ * Blow the corner still up behind the whole page, blurred and thrown out of
+ * focus, cross-fading whenever a different frame reaches the corner.
+ *
+ * The source is the ORIGINAL image, not a mip: it is already decoded and in
+ * the browser's cache by the time we ask for it (`loadSlot` fetched the same
+ * URL), so this costs a paint and no network. Slots with no image are skipped
+ * rather than blanked — a slate has nothing to blur, and dropping to black
+ * mid-stack reads as a bug rather than as a gap.
+ */
+function syncBackdrop() {
+  if (bg.length < 2) return;
+  const i = ((Math.round(current) % N) + N) % N;
+  if (i === bgIndex) return;
+
+  const slot = slots[i];
+  if (!slot || !slot.img || !slot.src) return;
+  bgIndex = i;
+
+  const next = bg[bgTop ^ 1];
+  next.style.backgroundImage = `url("${slot.src}")`;
+  next.classList.add('on');
+  bg[bgTop].classList.remove('on');
+  bgTop ^= 1;
+}
+
 // ── Loop ───────────────────────────────────────────────────────────────────
+
+/** Advance `current` by whichever mode currently owns it. */
+function advance(dt) {
+  switch (mode) {
+    case 'glide': {
+      glideT += dt;
+      const f = easeOutExpo(clamp(glideT / glideDur, 0, 1));
+      current = glideFrom + (glideTo - glideFrom) * f;
+      if (f >= 1) { current = glideTo; hold(); }
+      return;
+    }
+
+    case 'manual': {
+      // `held` means a wheel gesture or a finger is still supplying position
+      // directly; we only take over once it stops.
+      if (held) {
+        wheelIdle += dt;
+        if (ptr || wheelIdle < CONFIG.WHEEL_IDLE_MS) return;
+        held = false;
+        vel = 0;                      // a wheel gesture ends where it ends
+      }
+      current += vel * dt / 1000;
+      vel *= Math.exp(-CONFIG.FRICTION * dt / 1000);
+      if (Math.abs(vel) < 0.15) { vel = 0; snap(); }
+      return;
+    }
+
+    case 'hold':
+      idleT += dt;
+      if (idleT >= CONFIG.IDLE_MS) resumeAuto();
+      return;
+
+    default: {                        // auto
+      if (reduced) return;
+      const cycle = CONFIG.DWELL_MS + CONFIG.MOVE_MS;
+      cycleT += dt;
+      while (cycleT >= cycle) { cycleT -= cycle; baseIndex++; }
+      const moveT = cycleT - CONFIG.DWELL_MS;
+      const frac = moveT <= 0 ? 0 : easeOutExpo(clamp(moveT / CONFIG.MOVE_MS, 0, 1));
+      current = baseIndex + frac;
+    }
+  }
+}
+
+/** Tween to `to` (an absolute, possibly fractional index). */
+function glide(to, dur) {
+  glideFrom = current;
+  glideTo = to;
+  glideDur = dur;
+  glideT = 0;
+  mode = 'glide';
+  start();
+}
+
+/** Land on a whole frame. Half-frame compositions look like a stalled load. */
+function snap() {
+  const to = Math.round(current);
+  if (to === current) hold();
+  else glide(to, CONFIG.SNAP_MS);
+}
+
+/** Stationary, and counting down to handing control back to `auto`. */
+function hold() {
+  mode = 'hold';
+  idleT = 0;
+}
+
+function resumeAuto() {
+  // Re-seat the auto clock on wherever the person left the stack, otherwise
+  // the first auto step jumps back to where it would have been.
+  baseIndex = Math.round(current);
+  current = baseIndex;
+  cycleT = 0;
+  mode = 'auto';
+  dirty = true;
+}
 
 function tick(ts) {
   raf = requestAnimationFrame(tick);
@@ -362,17 +519,16 @@ function tick(ts) {
   const dt = Math.min(50, ts - (lastTs || ts));
   lastTs = ts;
 
-  const cycle = CONFIG.DWELL_MS + CONFIG.MOVE_MS;
-  cycleT += dt;
-  while (cycleT >= cycle) { cycleT -= cycle; baseIndex++; }
-
-  const moveT = cycleT - CONFIG.DWELL_MS;
-  const frac = moveT <= 0 ? 0 : easeOutExpo(clamp(moveT / CONFIG.MOVE_MS, 0, 1));
-  current = baseIndex + frac;
+  advance(dt);
 
   // Nothing moved during the dwell — skip the draw entirely. This is most
   // frames, and it is the single biggest reason this is cheap to run.
-  if (!dirty && current === lastDrawn) return;
+  if (!dirty && current === lastDrawn) {
+    // With reduced motion `auto` never advances, so nothing will change again
+    // until an input arrives — and every input path calls start().
+    if (reduced && mode === 'auto') park();
+    return;
+  }
   lastDrawn = current;
   dirty = false;
   draw();
@@ -386,6 +542,160 @@ function start() {
 
 function park() {
   if (raf) { cancelAnimationFrame(raf); raf = 0; }
+}
+
+// ── Input ──────────────────────────────────────────────────────────────────
+
+/** Canvas-relative CSS pixels. draw() works in the same space. */
+function local(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+/** Topmost plate under a point, or null. `hits` is already nearest-first. */
+function hitTest(x, y) {
+  for (const r of hits) {
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return r;
+  }
+  return null;
+}
+
+/**
+ * Bring slot `i` to the corner.
+ *
+ * `offset(i)` is the wrapped distance, so `current + offset(i)` always lands on
+ * that slot by the SHORT way round — without it, clicking the frame one step
+ * behind the corner would run the stack the whole way through the other
+ * twenty-odd films to reach it.
+ */
+function focus(i) {
+  const t = offset(i);
+  if (Math.abs(t) < 0.001) { hold(); return; }
+  glide(current + t, CONFIG.GLIDE_MS);
+}
+
+function setHover(i) {
+  if (i === hover) return;
+  hover = i;
+  canvas.classList.toggle('on-plate', i >= 0);
+  dirty = true;
+  start();
+}
+
+function onWheel(e) {
+  if (dead) return;
+  // The page itself does not scroll (body is overflow:hidden) and the lobby
+  // column is a separate scroller that the cursor is not over, so nothing is
+  // lost by claiming the gesture — and without preventDefault a trackpad can
+  // still trigger the browser's own overscroll effects.
+  e.preventDefault();
+  // Trackpads send the dominant axis in whichever direction the hand moved,
+  // and the stack runs along both edges, so either axis is meaningful.
+  const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+  const px = e.deltaMode === 1 ? raw * 16 : e.deltaMode === 2 ? raw * H : raw;
+
+  mode = 'manual';
+  held = true;
+  wheelIdle = 0;
+  vel = 0;
+  current += px / CONFIG.WHEEL_STEP;
+  start();
+}
+
+/**
+ * Pointer capture, but never fatal. It throws for a pointer id that is not
+ * currently active — which a synthetic event, or a pointer the browser has
+ * already released, both are. Losing capture only means the drag stops if the
+ * cursor leaves the canvas; letting it throw would abandon the gesture
+ * half-applied.
+ */
+function capture(fn, id) {
+  try { canvas[fn]?.(id); } catch { /* not an active pointer */ }
+}
+
+function onPointerDown(e) {
+  if (dead || e.button > 0) return;
+  capture('setPointerCapture', e.pointerId);
+  const p = local(e);
+  ptr = {
+    id: e.pointerId, x0: p.x, y0: p.y, startCurrent: current,
+    moved: 0, lastX: p.x, lastY: p.y, lastT: performance.now(), vel: 0,
+  };
+  // Freeze wherever it is: grabbing something that is still drifting under the
+  // finger is the difference between "I am holding this" and "it is holding me".
+  mode = 'manual';
+  held = true;
+  wheelIdle = 0;
+  vel = 0;
+  start();
+}
+
+function onPointerMove(e) {
+  if (dead) return;
+  const p = local(e);
+
+  if (!ptr) { setHover(hitTest(p.x, p.y)?.i ?? -1); return; }
+  if (e.pointerId !== ptr.id) return;
+
+  const dx = p.x - ptr.x0, dy = p.y - ptr.y0;
+  ptr.moved = Math.max(ptr.moved, Math.hypot(dx, dy));
+  if (ptr.moved < CONFIG.DRAG_SLOP) return;
+
+  root.classList.add('dragging');
+  setHover(-1);
+
+  // Frames travel toward the corner as `current` grows — leftward along the
+  // bottom, then up the left edge. So pushing the stack in either of those
+  // directions runs it forward, and one combined term covers both arms and
+  // every diagonal in between.
+  const steps = -(dx + dy) / CONFIG.DRAG_STEP;
+  current = ptr.startCurrent + steps;
+
+  const now = performance.now();
+  const ms = now - ptr.lastT;
+  if (ms > 8) {
+    const inst = -((p.x - ptr.lastX) + (p.y - ptr.lastY)) / CONFIG.DRAG_STEP / (ms / 1000);
+    ptr.vel = ptr.vel * 0.6 + inst * 0.4;   // smoothed, or one jittery sample throws the flick
+    ptr.lastX = p.x; ptr.lastY = p.y; ptr.lastT = now;
+  }
+}
+
+function onPointerUp(e) {
+  if (dead || !ptr || e.pointerId !== ptr.id) return;
+  const { moved, vel: v } = ptr;
+  const p = local(e);
+  ptr = null;
+  held = false;
+  root.classList.remove('dragging');
+  capture('releasePointerCapture', e.pointerId);
+
+  if (moved < CONFIG.DRAG_SLOP) {
+    // A tap, not a drag: centre whatever is under it.
+    const hit = hitTest(p.x, p.y);
+    if (hit) focus(hit.i);
+    else snap();
+    return;
+  }
+  vel = clamp(v, -CONFIG.MAX_VEL, CONFIG.MAX_VEL);
+  mode = 'manual';
+  start();
+}
+
+function onPointerCancel(e) {
+  if (!ptr || e.pointerId !== ptr.id) return;
+  ptr = null;
+  held = false;
+  root.classList.remove('dragging');
+  snap();
+}
+
+function wireInput() {
+  canvas.addEventListener('wheel', onWheel, { passive: false });
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerCancel);
+  canvas.addEventListener('pointerleave', () => { if (!ptr) setHover(-1); });
 }
 
 // ── Sizing ─────────────────────────────────────────────────────────────────
@@ -444,12 +754,18 @@ export function stop() {
   const cleanup = () => {
     root?.remove();
     root = null; canvas = null; ctx = null;
-    // let ~12 decoded bitmaps go before the film starts
+    // let ~12 decoded bitmaps go before the film starts. The backdrop holds a
+    // full-size still of its own, so its layers have to go with them.
     for (const s of slots) { s.img = null; s.mips = null; }
     slots = [];
+    bg = []; hits = []; ptr = null;
   };
   // transitionend does not fire if the tab backgrounds mid-fade
-  root.addEventListener('transitionend', cleanup, { once: true });
+  // The .backdrop layers transition too, so listen for the one on #ambient
+  // itself — a backdrop finishing its fade must not tear the layer down early.
+  root.addEventListener('transitionend', e => {
+    if (e.target === root) cleanup();
+  });
   setTimeout(cleanup, 900);
 }
 
@@ -462,6 +778,7 @@ function build() {
   if (!canvas) return false;
   ctx = canvas.getContext('2d', { alpha: true });
   if (!ctx) return false;
+  bg = [...root.querySelectorAll('.backdrop')];
 
   // Repeat the list up to SLOTS_MIN so the wrap seam always lands outside the
   // cull radius. A repeat sits 6 slots away at ~14% size — reads as rhythm.
@@ -517,6 +834,7 @@ async function boot() {
   ro = new ResizeObserver(() => resize());
   ro.observe(root);
   resize(true);
+  wireInput();
 
   // ctx.fillText silently uses the fallback if the webfont is not ready. In
   // reduced-motion mode only one frame is ever drawn, so without this the

@@ -21,8 +21,18 @@
      #stage on entry rather than duplicated — everything visible on the
      player screen must be a descendant of #stage or it vanishes in
      fullscreen. Moving a canvas in the DOM keeps its bitmap.
-     Driven entirely by js/frames.js; decorative, so aria-hidden. -->
-<div id="ambient" aria-hidden="true"><canvas></canvas></div>
+     Driven entirely by js/frames.js; decorative, so aria-hidden.
+
+     The two .backdrop divs are the blurred, zoomed wash behind everything:
+     whichever still is currently at the corner, blown up and thrown out of
+     focus. Two of them because they cross-fade — one holds the outgoing
+     image while the other brings the new one in. They must stay BEFORE the
+     canvas: paint order is backdrop → plates → contrast scrim (::after). -->
+<div id="ambient" aria-hidden="true">
+  <div class="backdrop"></div>
+  <div class="backdrop"></div>
+  <canvas></canvas>
+</div>
 
 <!-- ══════════════════════════ LOBBY ══════════════════════════
      Three cards, one visible at a time: choose what you're doing, fill in the
