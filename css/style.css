@@ -706,13 +706,29 @@ input  { font: inherit; }
   user-select: none;
   pointer-events: auto;
   opacity: var(--tile-opacity, 1);
-  transition: opacity .2s, border-color var(--dur-s), box-shadow var(--dur-s);
+  /* Asymmetric on purpose — see the awake rule below. This is the RESTING state:
+     hold at full strength for a moment after the reason to be awake has gone, then
+     fade out slowly. The hold matters because speech is gappy; without it a tile
+     flickers between words, which is far more distracting than a tile that simply
+     stays lit through a sentence. */
+  transition:
+    opacity var(--dur-l) var(--ease-out-expo) var(--tile-hold, .7s),
+    border-color var(--dur-s),
+    box-shadow var(--dur-s);
 }
 /* Fade is for tiles you are not paying attention to. Anything that means "look
-   at me" — talking, hovering, being dragged — overrides it. */
+   at me" — talking, hovering, being dragged — overrides it, and does so IMMEDIATELY:
+   no delay and a short duration, so a tile is at full strength by the time you have
+   registered that someone started talking. Coming back is fast, going away is slow. */
 .tile:hover,
 .tile.speaking,
-.tile.dragging { opacity: 1; }
+.tile.dragging {
+  opacity: 1;
+  transition:
+    opacity var(--dur-s) var(--ease-out-quart) 0s,
+    border-color var(--dur-s),
+    box-shadow var(--dur-s);
+}
 .tile.dragging { cursor: grabbing; border-color: var(--white); }
 .tile.speaking { border-color: var(--white); box-shadow: 0 0 0 1px var(--white); }
 .tile video { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -803,6 +819,11 @@ input  { font: inherit; }
   bottom: auto !important;
   width: min(15rem, 22vw) !important;
   cursor: default;
+  /* Never dim anyone in the waiting room. The fade exists to keep faces out of the
+     way of a film; before the film there is nothing to keep them out of the way of,
+     and a room full of half-invisible people reads as broken rather than subtle.
+     Wins over the .tile rule on specificity alone — no !important needed. */
+  opacity: 1;
 }
 .stage.phase-lobby .tile-resize { display: none; }
 

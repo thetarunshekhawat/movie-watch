@@ -47,7 +47,7 @@ window on its own machine.
 | Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified, plus a host-only control lock |
 | Player + file handling | `js/player.js` | ✅ Done — codec + audio preflight, fingerprint |
 | Subtitles | `js/subs.js` | ✅ Done — SRT→VTT verified, loadable at any point via CC or drag-and-drop |
-| Video call + auto-duck | `js/call.js` | ✅ On demand at any moment (no opt-in checkbox). Verified with synthetic cameras — tiles, badges, fade, drag, toggle on/off. Real webcams and cross-network still unproven |
+| Video call + auto-duck | `js/call.js` | ✅ On demand at any moment (no opt-in checkbox). Verified with synthetic cameras — tiles, badges, fade, drag, toggle on/off. Tiles rest dim and wake on speech or hover (default 0.35, asymmetric fade, lobby exempt). Real webcams and cross-network still unproven |
 | Chat + reactions | `js/chat.js` | ✅ Done — verified peer-to-peer, works in the waiting room too |
 | Entrance, waiting room, host controls | `js/main.js` | ✅ Done — create/join, room-existence probe, phases, knock-to-enter |
 | Layout / controls | `js/ui.js` | ✅ Done — includes click-outside panel dismissal |
@@ -165,6 +165,29 @@ Each entry records *why*, so these don't get re-litigated in a future session.
 Add-ons SDK runs *your* app inside Meet in a sandboxed iframe, which fights local file access and
 fullscreen control. Building the call directly on WebRTC is less work and reuses the same data
 channel for sync messages.
+
+**Video tiles rest dim and wake on speech or hover, and the fade is asymmetric.**
+*(2026-07-30.)* The point of the tiles during a film is to know your friends are there, not to watch
+them — so at rest they sit at 35% and the film has the screen. Anything that means *look at me* —
+that person speaking, your cursor over them, dragging them — brings them straight back to full.
+
+Three details are load-bearing and should not be "tidied":
+
+- **Coming back is fast (.18s, no delay); going away is slow (.8s after a .7s hold).** Symmetric
+  timing was the original and it flickers: speech is gappy, so a tile pulsed between words, which
+  draws the eye far more than a tile that simply stays lit through a sentence. The hold rides on
+  top of the ducker's existing 500ms `RELEASE_MS`, so a tile stays up ~1.2s after a voice drops and
+  then drifts out.
+- **The waiting room never dims.** The fade exists to keep faces out of the way of a film; before
+  the film there is nothing to keep them out of the way of, and a room full of half-invisible people
+  reads as broken. `.stage.phase-lobby .tile` wins on specificity alone.
+- **The default is 0.35, not 1.** This mechanism already existed in CSS and shipped *switched off* —
+  the Settings slider defaulted to full strength, so unless you went looking you never saw it. That
+  is the actual bug this entry fixes. The slider still goes to 1 to turn fading off.
+
+Driven entirely by the `.speaking` class the ducker already sets, so there is no second voice
+detector — and note it is set regardless of whether auto-duck is enabled, which is why the fade
+still works with ducking switched off.
 
 **Relay redundancy is 16, not Trystero's default 5.** *(2026-07-30.)* Trystero picks its relays by
 deterministically shuffling the 47-relay default pool with a hash of the **`appId`** and taking the
@@ -985,6 +1008,24 @@ single point of failure. See the decision log.*
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-30 — tiles rest dim and wake when you speak
+
+The video tiles now sit at 35% during the film and come back to full strength the instant that
+person speaks, or when you hover them, holding for a beat before drifting out again.
+
+Most of this already existed — `--tile-opacity` with `.tile:hover` / `.tile.speaking` overrides —
+but it shipped **switched off**: the Settings slider defaulted to 1, so nobody who did not go
+looking ever saw it. Changed the default to 0.35, made the transition asymmetric (fast in, slow
+out, with a hold, because symmetric timing flickers between words), and exempted the waiting room,
+where dimming people reads as broken rather than subtle.
+
+No new voice detection: it rides the `.speaking` class the ducker already sets, which fires whether
+or not auto-duck is enabled.
+
+Verified against the real stylesheet, seven states: resting during playback (0.35), while speaking
+(1), held just after speech stops (1), faded back out (0.35), while hovered (1), faded after hover
+leaves (0.35), and the waiting room (1, never dims).
 
 ### 2026-07-30 — the second cause of "Room doesn't exist": a five-relay monoculture, and a harness that can prove it
 

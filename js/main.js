@@ -1099,7 +1099,12 @@ async function startSession(roomCode) {
     const tileOpacity = $('tileOpacity');
     const tileSize = $('tileSize');
 
-    tileOpacity.value = localStorage.getItem('mw:tileOpacity') ?? '1';
+    // Default to DIM, not to 1. This defaulted to full strength, which meant the
+    // whole fade mechanism — dim at rest, full while speaking or hovered — existed
+    // in the CSS but was invisible to anybody who never went looking in Settings.
+    // A feature nobody sees is not a feature. 0.35 is low enough to keep faces out
+    // of the film and high enough to still read as a person.
+    tileOpacity.value = localStorage.getItem('mw:tileOpacity') ?? '0.35';
     tileSize.value = localStorage.getItem('mw:tileSize') ?? '200';
 
     const applyTileStyle = () => {

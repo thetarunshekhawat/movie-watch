@@ -116,6 +116,12 @@ echo-cancellation is built for voices, not loud continuous film audio, and it wi
 
 Controls marked with a small tick affect both of you. Anything labelled **"just you"** doesn't.
 
+**Faces stay out of the way.** During the film everyone's tile rests faded, so the movie has the
+screen. The moment somebody speaks their tile comes straight back to full strength — as does
+anyone's when you hover over them — then holds for a second and drifts out again. Nobody dims in
+the waiting room, where the point is to see each other. Settings (⚙) → **Fade** sets how far back
+they sit; slide it all the way right to switch fading off entirely.
+
 ---
 
 ## When something's wrong
