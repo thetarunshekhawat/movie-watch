@@ -942,14 +942,13 @@ observed. Headless Chromium is not a useful test for this.
 
 ## Next steps
 
-1. **Deploy the relay-redundancy fix, then re-run the pair that failed.** The fix is in `net.js` and
-   verified locally, but the live site still serves redundancy 5 until it is pushed — and a
-   redundancy-16 joiner talking to a redundancy-5 host is *fine* (shared prefix), so it can go out
-   without coordinating. Then: same two people, same two networks, same room. Read the new error
-   copy carefully if it still fails — "Can't reach the matchmaking network" and "Room doesn't
-   exist (we asked N servers)" now point at genuinely different problems. `Path: relay/…` in
-   Settings (⚙) remains the proof that TURN is doing its job. **Do this before building anything
-   else.**
+1. **Re-run the pair that failed.** The relay fix is deployed and verified *on the live site*
+   (commit `8a3a615`) — including the exact blackhole scenario that failed against the previous
+   deploy — but the only test that settles it is the two real machines on their two real networks.
+   Same two people, same room. If it still fails, the new copy narrows it for you: "Can't reach the
+   matchmaking network" means that network cannot matchmake at all, while "Room doesn't exist (we
+   asked N servers)" means discovery worked and the route did not — at which point read `Path` in
+   Settings (⚙); `relay/…` proves TURN is doing its job. **Do this before building anything else.**
 2. **Run `node tools/test-room.mjs` from the machine that fails.** The harness needs nothing but
    Chrome and reproduces the whole join on one machine, so it separates "this network cannot
    matchmake" from "these two networks cannot route to each other" in about 30 seconds — no second
@@ -1010,9 +1009,15 @@ cert check. Lose those five on a network and the app is dead, and it blames the 
 |---|---|
 | local, unmodified | PASS, joins in ~2s, 11–13/16 relays open |
 | local (redundancy 16), the 5 old relays blackholed | **PASS** in ~2s via `relay.damus.io` and others |
-| **deployed (redundancy 5), same 5 blackholed** | **FAIL — "Room doesn't exist", reproducing the user's screenshot exactly** |
+| **deployed BEFORE the fix (redundancy 5), same 5 blackholed** | **FAIL — "Room doesn't exist", reproducing the user's screenshot exactly** |
+| **deployed AFTER the fix, same 5 blackholed** | **PASS** — 8/16 and 5/16 relays open |
+| deployed after the fix, no blocking | PASS, 10–12/16 relays open |
 | local, all 47 relays blackholed | FAIL, correctly: "Can't reach the matchmaking network" |
 | local, `--break-ice` (discovery works, route denied) | FAIL: "doesn't exist… we asked 12 matchmaking servers" |
+
+**Deployed** in `8a3a615`, and the before/after above is measured against the live site an hour
+apart — the same command, the same blackholed relays, FAIL then PASS. GitHub Pages took ~60s to
+serve it. Note this says nothing yet about the two real machines; see Next steps.
 
 **Fixed:** `RELAY_REDUNDANCY = 16` in `net.js`. Safe precisely because the shuffle is deterministic
 on `appId` — the wider slice keeps the same first five, so redundancy-5 and redundancy-16 clients
