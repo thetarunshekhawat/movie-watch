@@ -1,6 +1,10 @@
 # Browser-automation tool output
 .gstack/
 
+# Failure screenshots from tools/test-room.mjs — diagnostic output, not source
+test-host.png
+test-guest.png
+
 # Agent worktrees — these are full checkouts of this repo, not source
 .claude/
 

@@ -120,9 +120,17 @@ Controls marked with a small tick affect both of you. Anything labelled **"just 
 
 ## When something's wrong
 
+**"Can't reach the matchmaking network."**
+Your connection is blocking the servers that introduce people to each other, so the app never got to
+look for the room — **the room code is not the problem.** Strict corporate, university or campus
+wi-fi does this, and so do a few mobile networks. A phone hotspot or a different network almost
+always fixes it. (If you are curious whether this is really it, `node tools/test-room.mjs` from that
+machine will tell you in half a minute — see *Testing changes*.)
+
 **"Room X doesn't exist" — but I know it does.**
-Believe yourself, not the message. It means "no fully connected peer within 12 seconds", and it
-cannot tell an empty room apart from one it found but couldn't reach. In that order:
+Believe yourself, not the message. It means "no fully connected peer within 12 seconds". If the
+message adds *"we asked N matchmaking servers"*, the search itself worked, so either the room really
+is empty or the two of you could not build a connection. In that order:
 
 1. A room only exists while somebody is sitting in it. If the host closed their window, the room is
    gone — ask them to open it again. And check the code character for character.
@@ -199,9 +207,33 @@ Open **Settings** and read **Path** and **Watching with**.
 
 ## Testing changes
 
-You don't need a second person. Open the page in a **normal window and an incognito window** with
-the same room code — they're genuinely separate peers, so the whole sync loop works. Use a short
-clip, not a two-hour film.
+**The quickest check that a room actually works, start to finish:**
+
+```bash
+node tools/test-room.mjs
+```
+
+That launches two headless Chrome windows, creates a room in one, joins it from the other through
+the real interface, and tells you what the joiner was actually told. It needs nothing installed but
+Chrome — no npm, no packages — and takes about fifteen seconds. Exit code 0 means the room existed
+and both browsers got in.
+
+| | |
+|---|---|
+| `--deployed` | test the live site instead of your working copy |
+| `--block 5` | pretend your network blocks the relays the app used to depend on |
+| `--block all` | pretend it blocks the matchmaking layer entirely |
+| `--break-ice` | let the two find each other, then deny them a route |
+| `--headful` | watch it happen in visible windows |
+| `--movie path.mp4` | use a different clip (default `./testclip.mp4`) |
+
+The `--block` and `--break-ice` modes exist because "Room doesn't exist" has had two completely
+different causes, and both were invisible from a single browser on a working network. If you change
+anything in `js/net.js`, run all five.
+
+For sync work you don't need a second person either. Open the page in a **normal window and an
+incognito window** with the same room code — they're genuinely separate peers, so the whole sync
+loop works. Use a short clip, not a two-hour film.
 
 A test clip with a burned-in timecode makes desync obvious at a glance:
 

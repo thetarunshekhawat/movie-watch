@@ -41,8 +41,9 @@ window on its own machine.
 | Ambient frame stack | `js/frames.js`, `js/frames-data.js`, `js/frames-urls.js` | ✅ Done — canvas corner stack, title printed on each frame, 26 films / 109 stills served from TMDB's CDN. Interactive: click a frame to bring it to the corner, wheel or drag to run the stack by hand |
 | Backdrop wash | `css/style.css` (`#ambient .backdrop`), `syncBackdrop()` in `js/frames.js` | ✅ Done — the corner still, blurred and zoomed behind the whole page, cross-fading as the stack moves |
 | Still-population tooling | `tools/fetch-stills.mjs`, `tools/grab-frames.sh` | ✅ Done — TMDB fetch verified end to end against a real key; all 26 films resolved correctly. `grab-frames.sh` still unrun against a real film file |
+| Two-browser join test | `tools/test-room.mjs` | ✅ Done — launches two headless Chromes, creates a room in one and joins it from the other through the real UI. Zero dependencies (CDP over Node's built-in WebSocket). Four modes: normal, `--block N`, `--block all`, `--break-ice` |
 | Typeface | `fonts/` | ✅ Done — EB Garamond self-hosted, 4 subsetted woff2 + OFL |
-| Networking | `js/net.js` | ✅ Done — verified over real Nostr relays |
+| Networking | `js/net.js` | ✅ Done — verified over real Nostr relays. Relay redundancy raised 5 → 16 on 2026-07-30 after the default-5 selection was shown to be a single point of failure |
 | Playback sync | `js/sync.js` | ✅ Done — play/pause/seek/drift all verified, plus a host-only control lock |
 | Player + file handling | `js/player.js` | ✅ Done — codec + audio preflight, fingerprint |
 | Subtitles | `js/subs.js` | ✅ Done — SRT→VTT verified, loadable at any point via CC or drag-and-drop |
@@ -164,6 +165,22 @@ Each entry records *why*, so these don't get re-litigated in a future session.
 Add-ons SDK runs *your* app inside Meet in a sandboxed iframe, which fights local file access and
 fullscreen control. Building the call directly on WebRTC is less work and reuses the same data
 channel for sync messages.
+
+**Relay redundancy is 16, not Trystero's default 5.** *(2026-07-30.)* Trystero picks its relays by
+deterministically shuffling the 47-relay default pool with a hash of the **`appId`** and taking the
+first `redundancy`. Not per room, not per session — so at the default of 5, every room this app will
+ever open matchmakes through the *same five* relays, and they are hobby relays (one,
+`schnorr.me`, intermittently fails Chrome's certificate check). Lose those five on a given network
+and the app is not degraded, it is dead, and it reports the outage as *"Room doesn't exist"*.
+Verified both directions with `tools/test-room.mjs`: blackhole those five and the deployed
+redundancy-5 build fails exactly as users reported, while redundancy 16 joins in ~2s through
+`relay.damus.io` and others.
+
+Why raising the number is safe when *pinning a list* was not (see the warning below): the shuffle is
+deterministic on `appId`, so a redundancy-16 client's relays are a **superset with the same first
+five** as a redundancy-5 client's. Old and new builds still share all five of their relays, so
+there is no flag day and no window where deployed clients cannot see each other. Cost is 11 extra
+idle WebSockets during matchmaking. Do not "simplify" this back to the default.
 
 **Trystero instead of our own signaling server.** Trystero does WebRTC matchmaking over public Nostr
 relays, so there is no server to run, deploy, or keep awake. The alternative considered was a Node
@@ -473,6 +490,54 @@ clocks are not synchronised) — only the RTT-derived `oneWay` estimate is used 
 ## Gotchas & learnings
 
 > Append to this as new ones are hit. Each one here cost real debugging time.
+
+**Trystero's relay choice depends on the `appId` — and nothing else.** *(2026-07-30.)* This is the
+one to know before touching discovery. From `getRelays` in `@trystero-p2p/core`:
+
+```js
+relayConfig?.urls || (shuffle ? shuffle(defaultRelayUrls, hash(appId)) : defaultRelayUrls)
+                       .slice(0, relayConfig?.redundancy ?? strategyDefault)
+```
+
+The shuffle seed is `appId`, so the selection is identical for every room, every session, every
+user, forever. Two consequences that are easy to get backwards:
+
+- **A "flaky relay" is never flaky for one room and fine for another.** If discovery breaks for one
+  room code and works for another, relays are *not* your problem — look at timing or the movie-file
+  gate instead. Measured: four different room codes produced the same five sockets.
+- **Raising `redundancy` is safe; replacing `urls` is not.** Because the shuffle is deterministic,
+  a longer slice is a superset with an identical prefix, so clients on different redundancy values
+  still overlap. A hand-picked `urls` list shares nothing with the default selection, which is
+  precisely why the earlier attempt at pinning relays broke discovery outright.
+
+**There is no way to tell "the room is empty" from "found them, can't connect" — three signals were
+tried and all three failed.** *(2026-07-30.)* This is the most-wanted diagnostic in the app and it
+is currently impossible; do not spend another session rediscovering that.
+
+| Signal | Why it fails |
+|---|---|
+| `room.getPeers()` mid-join | Stays **empty** until a peer is fully connected. Measured during a deliberately ICE-starved join: `getPeers` was `{}` the entire time while signaling ran normally. |
+| Counting `RTCPeerConnection`s | Trystero pre-creates a **pool of ~20** connections eagerly, all in state `new`, before anyone is found. An empty room and an unreachable peer are indistinguishable: 20 vs 21. |
+| An announce hook | Not exposed. `onPeerJoin` is the earliest public event and it fires *after* the data channel opens. |
+
+So `joinExisting()` reports the relay count as evidence that the search ran, and stops short of
+blaming the room code. Fixing this properly needs an upstream hook, not more cleverness here.
+
+**Trystero does not trickle ICE — candidates ride inside the SDP.** *(2026-07-30, found while
+building `--break-ice`.)* Blocking `onicecandidate` and no-oping `addIceCandidate` does *nothing*:
+the pair still connected in 2ms. Candidates are gathered before the description is sent, so
+starving ICE means stripping `a=candidate:` lines out of the SDP in `setRemoteDescription`. Worth
+knowing for any future WebRTC fault injection, and worth knowing that a "no candidates" theory
+cannot be tested by watching the candidate callbacks.
+
+**Chrome's `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` is inert without a configured
+proxy.** Tried it to deny two local browsers their loopback route; they connected anyway. Use the
+SDP-stripping shim above instead.
+
+**zsh does not word-split unquoted `$var`, so `node tool.mjs $flags` passes one argument.** A test
+matrix run as `for m in "--block 5" …; do node tool.mjs $m; done` silently ran every case
+*unblocked* and reported four passes. Use `${=m}` or an array. Two of those passes were meaningless
+and nearly went into this document as evidence.
 
 **A `const` used by a function that runs early in the same scope throws — and the symptom looks
 like a completely unrelated feature being broken.** *(Hit three times in one sitting while building
@@ -808,20 +873,34 @@ One measurement from that network is worth keeping: the **UDP** TURN lookups fai
 the `TURN` array are load-bearing; trimming it to the plain `turn:…:80` udp entry would restore the
 original failure on exactly the network that prompted the fix.
 
-Ruled out while diagnosing, so nobody re-treads it: all five Nostr relays this app derives from its
-`appId` were reachable and correctly forwarded ephemeral events (publish → subscribe round trip);
-their TLS certificates were all valid; the network is *not* symmetric NAT (port mapping is
-preserved); and peer discovery itself is fast — two browsers on one machine reached `onPeerJoin` in
-**1.5 s**, so the 12 s probe window has ample headroom and is not the problem.
+Ruled out while diagnosing, so nobody re-treads it: their TLS certificates were all valid; the
+network is *not* symmetric NAT (port mapping is preserved); and peer discovery itself is fast — two
+browsers on one machine reached `onPeerJoin` in **1.5 s**, so the 12 s probe window has ample
+headroom and is not the problem.
 
-**"Room doesn't exist" is a misdiagnosis, not a message.** `joinExisting()` in `main.js` waits
-`ROOM_PROBE_MS` for `net.peerCount > 0`, and `peerCount` only rises on `room.onPeerJoin` — which
-fires after a **fully established WebRTC data channel**, not after discovery. So every transport
-failure downstream of discovery — ICE failure, no TURN, a dead relay, a firewall — surfaces to the
-user as the confident and wrong claim that nobody is in the room. The two states worth separating
-are "no announce ever seen" (really empty) and "found them, could not connect" (a network route
-problem). Until they are, this message will keep sending people to check a room code that was
-correct all along.
+> **Corrected 2026-07-30.** This paragraph used to also claim relay selection was "settled" because
+> all five relays were reachable and forwarded ephemeral events from the affected machine. That
+> observation was true but the conclusion drawn from it was wrong: reachable *at one moment from one
+> machine* does not make a five-relay monoculture safe, and those five are chosen by `appId` for
+> every room forever. See the decision log entry on relay redundancy. Relay selection was **not**
+> settled; it was a live single point of failure, and it is now 16 wide.
+
+**"Room doesn't exist" is still partly a misdiagnosis — but it no longer lies about the network.**
+*(Improved 2026-07-30.)* `joinExisting()` waits `ROOM_PROBE_MS` for `net.peerCount > 0`, and
+`peerCount` only rises on `room.onPeerJoin`, which fires after a **fully established WebRTC data
+channel** — not after discovery. So a transport failure downstream of discovery still lands on this
+screen.
+
+What changed: the case where *no matchmaking relay is reachable at all* is now split out, because in
+that case the app never got to ask the question and must not answer it. `net.relays` counts open
+relay sockets, and with zero open the user is told their connection is blocking the matchmaking
+servers and that the room code is not the problem. Both branches are covered by
+`tools/test-room.mjs --block all` and `--break-ice` respectively.
+
+What remains broken: an ICE failure *after* successful discovery still reads as "doesn't exist"
+(softened with "we asked N matchmaking servers, so the search itself worked"). That distinction
+needs a signal Trystero does not expose — see the three-signal table in Gotchas before attempting
+it again.
 
 **One Nostr relay throws cert errors.** `wss://schnorr.me/` fails with
 `ERR_CERT_AUTHORITY_INVALID` and spams the console. Harmless — Trystero connects through the other
@@ -863,17 +942,18 @@ observed. Headless Chromium is not a useful test for this.
 
 ## Next steps
 
-1. **Re-run the pair that failed, and read the Path row.** TURN is in (`net.js`), and every part of
-   it is verified *except* the part that matters: that those two specific machines now connect.
-   Same two people, same two networks, same room. `Path: relay/…` in Settings (⚙) is the proof.
-   Anything else — still "Room doesn't exist", or `Peers in room: 0` — means the relay is not being
-   selected, and the next thing to check is whether the movie file gate is stopping the joiner
-   before `connect()` ever runs. **Do this before building anything else.**
-2. **Stop reporting connection failure as "Room doesn't exist".** `joinExisting()` should
-   distinguish "no announce ever seen" from "found them, could not connect". The cheapest honest
-   split: keep waiting for `net.peerCount`, but if `room.getPeers()` has entries whose
-   `connectionState` is `connecting`/`failed`, say so — the room was found, the network route was
-   not — and point at TURN rather than at the room code.
+1. **Deploy the relay-redundancy fix, then re-run the pair that failed.** The fix is in `net.js` and
+   verified locally, but the live site still serves redundancy 5 until it is pushed — and a
+   redundancy-16 joiner talking to a redundancy-5 host is *fine* (shared prefix), so it can go out
+   without coordinating. Then: same two people, same two networks, same room. Read the new error
+   copy carefully if it still fails — "Can't reach the matchmaking network" and "Room doesn't
+   exist (we asked N servers)" now point at genuinely different problems. `Path: relay/…` in
+   Settings (⚙) remains the proof that TURN is doing its job. **Do this before building anything
+   else.**
+2. **Run `node tools/test-room.mjs` from the machine that fails.** The harness needs nothing but
+   Chrome and reproduces the whole join on one machine, so it separates "this network cannot
+   matchmake" from "these two networks cannot route to each other" in about 30 seconds — no second
+   person required. Add `--deployed` to test the live site rather than the working copy.
 3. **Watch someone use the frame stack.** Click-to-centre, wheel and drag are all verified
    working, but nobody has been observed *discovering* them — the only affordance is the cursor
    turning to a pointer and the plate's border going solid on hover. If people never touch it,
@@ -894,14 +974,63 @@ observed. Headless Chromium is not a useful test for this.
 
 *Dropped from this list: "re-test with every window closed to rule out ghost peers" and "add TURN
 **if** the machines still fail". Both are answered — the cross-network attempt was real, not a
-ghost, and it failed. Relay selection is also settled: the five relays this `appId` derives were
-each verified to forward ephemeral events, so reordering or pinning them fixes nothing.*
+ghost, and it failed.*
+
+*Also dropped, and worth saying why: this list used to assert that "relay selection is settled,
+so reordering or pinning them fixes nothing". Wrong, and it sent the next session looking in the
+wrong place. Pinning a list still fixes nothing, but the **width** of the selection was a live
+single point of failure. See the decision log.*
 
 ---
 
 ## Changelog
 
 *Newest first.*
+
+### 2026-07-30 — the second cause of "Room doesn't exist": a five-relay monoculture, and a harness that can prove it
+
+*"Room doesn't exist"* was reported again, on the deployed site, after the TURN fix — same room code
+(`movie-jt523c`), host sitting in the room the whole time. The TURN fix was live and correct; it
+just was not the only cause.
+
+**Built first, deliberately: `tools/test-room.mjs`.** Two headless Chrome instances, one creating a
+room and one joining it through the real UI — real file picker, real preflight, real Trystero — with
+no dependencies at all (Chrome DevTools Protocol over Node's built-in WebSocket, since this project
+has no npm). Every claim below is an output of it, and it turns a bug that needed two people on two
+networks into a 30-second command.
+
+**Found:** Trystero selects its relays by shuffling the 47-relay default pool with a hash of the
+**`appId`** and taking the first 5. Not per room — per *app*, forever. Every room this app has ever
+opened rides the same five hobby relays, one of which (`schnorr.me`) intermittently fails Chrome's
+cert check. Lose those five on a network and the app is dead, and it blames the room code.
+
+**Proved, both directions:**
+
+| Run | Result |
+|---|---|
+| local, unmodified | PASS, joins in ~2s, 11–13/16 relays open |
+| local (redundancy 16), the 5 old relays blackholed | **PASS** in ~2s via `relay.damus.io` and others |
+| **deployed (redundancy 5), same 5 blackholed** | **FAIL — "Room doesn't exist", reproducing the user's screenshot exactly** |
+| local, all 47 relays blackholed | FAIL, correctly: "Can't reach the matchmaking network" |
+| local, `--break-ice` (discovery works, route denied) | FAIL: "doesn't exist… we asked 12 matchmaking servers" |
+
+**Fixed:** `RELAY_REDUNDANCY = 16` in `net.js`. Safe precisely because the shuffle is deterministic
+on `appId` — the wider slice keeps the same first five, so redundancy-5 and redundancy-16 clients
+still share every relay the old build had. No flag day.
+
+**Also fixed:** the join gate no longer claims a room doesn't exist when it never managed to ask.
+`net.relays` reports open signaling sockets; with none open the user is told their connection is
+blocking the matchmaking servers, explicitly *not* the room code.
+
+**Attempted and reverted, with the evidence recorded so it is not retried blind:** distinguishing
+"empty room" from "found them, can't connect". Three candidate signals were tested and all three
+fail — `getPeers()` stays empty until connected, Trystero pre-creates a pool of ~20 idle
+`RTCPeerConnection`s so counting them is meaningless, and there is no announce hook. The branch was
+removed rather than shipped as dead code. See Gotchas.
+
+**Corrected in this document:** the previous claim that relay selection was "settled" because all
+five relays were individually reachable. True observation, wrong conclusion — it explicitly told the
+next session not to look here, which is where the bug was.
 
 ### 2026-07-27 — TURN goes in
 

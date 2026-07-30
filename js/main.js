@@ -450,10 +450,41 @@ async function startSession(roomCode) {
     const found = await waitFor(() => net.peerCount > 0, ROOM_PROBE_MS);
 
     if (!found) {
+      // Two very different failures used to share this one message, and telling them
+      // apart matters more than anything else on this screen.
+      //
+      // If not one matchmaking relay is reachable, we never got to ask whether the
+      // room exists — so we must not answer. People spent hours chasing a room code
+      // that was correct the whole time, because the app confidently blamed the code
+      // for what was actually a blocked network.
+      //
+      // What we still CANNOT tell apart: "nobody is there" versus "found them but
+      // could not build a route". Trystero exposes no announce hook, `getPeers()`
+      // stays empty until a peer is fully connected, and it pre-creates a pool of ~20
+      // unused RTCPeerConnections so counting those says nothing either. All three
+      // were measured — see PROJECT.md → Gotchas before trying again. Hence the copy
+      // below stops short of blaming the room code outright, and reports the relay
+      // count as evidence that the search itself ran.
+      const relays = net.relays;
+
+      if (relays.open === 0) {
+        return showConnStatus({
+          title: 'Can’t reach the matchmaking network',
+          body: 'Your connection is blocking the servers that introduce people to each '
+              + 'other, so we couldn’t look for the room at all — this is not a problem '
+              + `with the code “${roomCode}”. Corporate or campus wi-fi and a few mobile `
+              + 'networks do this. Try a different network or a phone hotspot.',
+          spinner: false,
+          actions: { retry: () => joinExisting(), back: abandon },
+        });
+      }
+
       return showConnStatus({
         title: `Room “${roomCode}” doesn't exist`,
         body: 'Nobody is in a room with that code. Check the code, or ask whoever '
-            + 'invited you to open theirs first — a room only exists while someone is in it.',
+            + 'invited you to open theirs first — a room only exists while someone is in it. '
+            + `(We asked ${relays.open} matchmaking `
+            + `${relays.open === 1 ? 'server' : 'servers'}, so the search itself worked.)`,
         spinner: false,
         actions: { retry: () => joinExisting(), back: abandon },
       });

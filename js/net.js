@@ -11,7 +11,7 @@
  * survives if they go away. See the decision log in PROJECT.md.
  */
 
-import { joinRoom, selfId } from 'https://esm.run/trystero';
+import { joinRoom, selfId, getRelaySockets } from 'https://esm.run/trystero';
 
 /** Namespaces our rooms so we never collide with another Trystero app. */
 const APP_ID = 'movie-watch-p2p-v1';
@@ -62,6 +62,42 @@ const TURN = [{
 }];
 
 /**
+ * How many Nostr relays to matchmake through.
+ *
+ * Trystero's default is 5, and that default was the second cause of *"Room doesn't
+ * exist"* — the one that survived the TURN fix. Read `getRelays` in
+ * `@trystero-p2p/core`:
+ *
+ *   relayConfig?.urls || shuffle(defaultRelayUrls, hash(appId)).slice(0, redundancy)
+ *
+ * The 47-relay default pool is shuffled by a hash of the APP ID — not the room code,
+ * not per session — and then cut to 5. So every room this app has ever opened, for
+ * everyone, forever, matchmakes through the same five relays:
+ *
+ *   social.amanah.eblessing.co · nostr.vulpem.com · schnorr.me
+ *   testnet-relay.samt.st · relay-can.zombi.cloudrodion.com
+ *
+ * These are hobby relays. `schnorr.me` already fails in Chrome with
+ * ERR_CERT_AUTHORITY_INVALID, so it is really four. Verified with two headless
+ * Chrome instances (`tools/test-room.mjs`): blackhole those five at the DNS layer —
+ * which is precisely what a blocking ISP or corporate firewall looks like to Chrome
+ * — and discovery never happens, the join times out, and the app tells the user the
+ * room doesn't exist. With redundancy 16 the same blackholed run discovers in a few
+ * seconds, because it reaches relay.damus.io and eight others.
+ *
+ * This is NOT the hand-picked list that broke discovery before (see below). It is
+ * the same default selection, just cut less aggressively, and that distinction is
+ * what makes it safe: the shuffle is deterministic on appId, so the first five URLs
+ * are still the same five in the same order. A peer at redundancy 16 and a peer at
+ * redundancy 5 therefore still share all five of their relays. Old and new clients
+ * interoperate, and there is no flag day.
+ *
+ * Cost of raising it is 11 more idle WebSockets during matchmaking, which close
+ * once everyone has connected.
+ */
+const RELAY_REDUNDANCY = 16;
+
+/**
  * DO NOT pin a hand-picked relay list here. This was tried and it broke discovery
  * outright — nobody could connect at all.
  *
@@ -96,7 +132,7 @@ export { selfId };
 export function connect(roomCode) {
   // Only pass turnConfig when we actually have relays, so the default-STUN-only
   // path stays exactly the documented default rather than "default plus empty list".
-  const config = { appId: APP_ID };
+  const config = { appId: APP_ID, relayConfig: { redundancy: RELAY_REDUNDANCY } };
   if (TURN.length) config.turnConfig = TURN;
 
   const room = joinRoom(config, roomCode);
@@ -348,6 +384,29 @@ export function connect(roomCode) {
         }
       } catch { /* getStats is best-effort; never break the UI over diagnostics */ }
       return out;
+    },
+
+    /**
+     * Can we reach the matchmaking network at all?
+     *
+     * This distinguishes the two failures that used to wear the same message. If no
+     * relay socket is OPEN, we have not searched a room and come up empty — we never
+     * got to ask, and saying "that room doesn't exist" is then a straight lie that
+     * sends people off checking a room code that was fine all along. That lie cost
+     * this project days. See PROJECT.md → Gotchas.
+     *
+     * `getRelaySockets()` is Trystero's own view of its signaling transport, keyed by
+     * URL. Wrapped in a try because it is an internals-adjacent export: a diagnostic
+     * must never be the reason a join fails.
+     */
+    get relays() {
+      try {
+        const sockets = Object.entries(getRelaySockets());
+        const open = sockets.filter(([, ws]) => ws?.readyState === 1).map(([url]) => url);
+        return { total: sockets.length, open: open.length, urls: open };
+      } catch {
+        return { total: 0, open: 0, urls: [], unknown: true };
+      }
     },
 
     leave() {
